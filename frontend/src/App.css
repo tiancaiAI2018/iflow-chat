@@ -1,8 +1,17 @@
-/* 全局样式 */
+/* ============================================
+   全局样式 - App.css
+   ============================================ */
+
+/* 重置样式 */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
@@ -13,6 +22,17 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background-color: #f5f5f5;
   min-height: 100vh;
+  line-height: 1.5;
+}
+
+/* 安全区域适配 (iOS) */
+@supports (padding: env(safe-area-inset-top)) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
 }
 
 /* 应用布局 */
@@ -20,67 +40,16 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-}
-
-/* 顶部导航 */
-.app-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 20px;
-  height: 60px;
-  background-color: #1a73e8;
-  color: white;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.header-logo {
-  font-size: 1.5rem;
-  font-weight: bold;
-}
-
-.header-nav {
-  display: flex;
-  gap: 20px;
-}
-
-.header-nav a {
-  color: white;
-  text-decoration: none;
-  padding: 8px 16px;
-  border-radius: 4px;
-  transition: background-color 0.2s;
-}
-
-.header-nav a:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
-.header-user {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.logout-btn {
-  padding: 6px 12px;
-  border: 1px solid white;
-  background: transparent;
-  color: white;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.logout-btn:hover {
-  background-color: rgba(255, 255, 255, 0.1);
+  min-height: -webkit-fill-available;
 }
 
 /* 主内容区 */
 .app-main {
   flex: 1;
-  padding: 20px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
 }
 
 /* 占位页面 */
@@ -94,6 +63,7 @@ body {
   background-color: white;
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  margin: 20px;
 }
 
 /* 加载状态 */
@@ -106,72 +76,39 @@ body {
   color: #666;
 }
 
-/* 通知导航按钮 */
-.notification-nav-btn {
-  position: relative;
-  color: white;
-  text-decoration: none;
-  padding: 8px 16px;
-  border-radius: 4px;
-  transition: background-color 0.2s;
-  background: transparent;
-  border: none;
-  font-size: 1rem;
-  cursor: pointer;
-}
-
-.notification-nav-btn:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
-.notification-nav-btn.active {
-  background-color: rgba(255, 255, 255, 0.2);
-}
-
-/* 未读角标 */
-.notification-unread-badge {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  background-color: #ff4757;
-  color: white;
-  font-size: 11px;
-  font-weight: bold;
-  border-radius: 9px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-  0% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.1);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
-
 /* 通知弹窗 */
 .notification-popup {
   position: fixed;
-  top: 70px;
-  right: 20px;
-  z-index: 1000;
-  animation: slideIn 0.2s ease-out;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 70px 16px 16px;
+  animation: popup-fade-in 0.2s ease;
 }
 
-@keyframes slideIn {
+@keyframes popup-fade-in {
   from {
     opacity: 0;
-    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.notification-popup > div {
+  animation: popup-slide-in 0.3s ease;
+}
+
+@keyframes popup-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
   }
   to {
     opacity: 1;
@@ -184,55 +121,143 @@ body {
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding-top: 20px;
+  padding: 16px;
+  flex: 1;
+  overflow-y: auto;
 }
 
-/* 导航链接激活状态 */
-.header-nav a.active {
-  background-color: rgba(255, 255, 255, 0.2);
-  font-weight: 500;
+/* ============================================
+   响应式设计
+   ============================================ */
+
+/* 平板及以上 */
+@media (min-width: 768px) {
+  .notification-popup {
+    padding: 80px 24px 24px;
+  }
+
+  .notifications-page {
+    padding: 24px;
+  }
+
+  .page-placeholder {
+    margin: 24px;
+  }
 }
 
-/* 响应式布局 */
-@media (max-width: 768px) {
-  .app-header {
-    padding: 0 10px;
-    height: 50px;
+/* 桌面端 */
+@media (min-width: 1024px) {
+  .notification-popup {
+    padding: 80px 32px 32px;
   }
 
-  .header-logo {
-    font-size: 1.2rem;
+  .notifications-page {
+    padding: 32px;
   }
 
-  .header-nav {
-    gap: 10px;
+  .page-placeholder {
+    margin: 32px;
   }
+}
 
-  .header-nav a {
-    padding: 6px 10px;
-    font-size: 0.9rem;
-  }
-
-  .app-main {
-    padding: 10px;
-  }
-
-  .notification-nav-btn {
-    padding: 6px 10px;
-    font-size: 0.9rem;
-  }
-
-  .notification-unread-badge {
-    min-width: 16px;
-    height: 16px;
-    font-size: 10px;
-    top: -2px;
-    right: -2px;
+/* 移动端 */
+@media (max-width: 767px) {
+  html {
+    font-size: 14px;
   }
 
   .notification-popup {
-    top: 60px;
-    right: 10px;
-    left: 10px;
+    padding: 60px 8px 8px;
+  }
+
+  .notifications-page {
+    padding: 12px;
+  }
+
+  .page-placeholder {
+    margin: 12px;
+    font-size: 1.2rem;
+  }
+}
+
+/* 小屏手机 */
+@media (max-width: 374px) {
+  html {
+    font-size: 13px;
+  }
+
+  .notification-popup {
+    padding: 56px 4px 4px;
+  }
+
+  .notifications-page {
+    padding: 8px;
+  }
+}
+
+/* 横屏手机 */
+@media (max-height: 500px) and (orientation: landscape) {
+  .notification-popup {
+    padding: 52px 16px 16px;
+  }
+}
+
+/* ============================================
+   触摸设备优化
+   ============================================ */
+
+@media (hover: none) and (pointer: coarse) {
+  /* 移除点击高亮 */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* 优化滚动 */
+  .app-main,
+  .notifications-page {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* ============================================
+   辅助类
+   ============================================ */
+
+/* 隐藏滚动条但保持可滚动 */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* 文本截断 */
+.text-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Flex 辅助 */
+.flex-1 { flex: 1; }
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ============================================
+   打印样式
+   ============================================ */
+
+@media print {
+  .notification-popup {
+    display: none;
+  }
+
+  body {
+    background: white;
   }
 }

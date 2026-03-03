@@ -6,6 +6,7 @@ import { Login, Register, LoginEmail } from './components/Auth';
 import { Chat } from './components/Chat';
 import { TaskManager } from './components/TaskManager';
 import { NotificationBar } from './components/Notification';
+import { Header } from './components/Layout';
 import './App.css';
 
 // 通知页面组件
@@ -34,60 +35,33 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
 
 // 主应用布局
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, logout } = useAuth();
-  const { unreadCount, fetchNotifications, addNotification } = useNotifications();
-  const [showNotificationBar, setShowNotificationBar] = useState(false);
   const location = useLocation();
-
-  // 定期刷新未读数量
-  useEffect(() => {
-    fetchNotifications();
-    const interval = setInterval(() => {
-      fetchNotifications();
-    }, 60000); // 每分钟刷新一次
-    return () => clearInterval(interval);
-  }, [fetchNotifications]);
+  const [showNotificationPopup, setShowNotificationPopup] = useState(false);
 
   // 在通知页面时隐藏弹窗
   useEffect(() => {
     if (location.pathname === '/notifications') {
-      setShowNotificationBar(false);
+      setShowNotificationPopup(false);
     }
   }, [location.pathname]);
 
-  const toggleNotificationBar = () => {
-    setShowNotificationBar((prev) => !prev);
+  const toggleNotificationPopup = () => {
+    setShowNotificationPopup((prev) => !prev);
   };
 
   return (
     <div className="app-layout">
-      <header className="app-header">
-        <div className="header-logo">iFlow Chat</div>
-        <nav className="header-nav">
-          <a href="/chat" className={location.pathname === '/chat' ? 'active' : ''}>对话</a>
-          <a href="/tasks" className={location.pathname === '/tasks' ? 'active' : ''}>任务</a>
-          <button 
-            className="notification-nav-btn"
-            onClick={toggleNotificationBar}
-          >
-            通知
-            {unreadCount > 0 && (
-              <span className="notification-unread-badge">
-                {unreadCount > 99 ? '99+' : unreadCount}
-              </span>
-            )}
-          </button>
-        </nav>
-        <div className="header-user">
-          {user && <span>{user.username}</span>}
-          <button onClick={logout} className="logout-btn">退出</button>
-        </div>
-      </header>
+      <Header 
+        onToggleNotification={toggleNotificationPopup}
+        showNotificationPopup={showNotificationPopup}
+      />
       <main className="app-main">
         {children}
-        {showNotificationBar && location.pathname !== '/notifications' && (
-          <div className="notification-popup">
-            <NotificationBar onClose={() => setShowNotificationBar(false)} />
+        {showNotificationPopup && location.pathname !== '/notifications' && (
+          <div className="notification-popup" onClick={() => setShowNotificationPopup(false)}>
+            <div onClick={(e) => e.stopPropagation()}>
+              <NotificationBar onClose={() => setShowNotificationPopup(false)} />
+            </div>
           </div>
         )}
       </main>
