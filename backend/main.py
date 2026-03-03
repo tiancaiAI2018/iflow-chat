@@ -1,15 +1,29 @@
 """
 iFlow 对话网页应用 - FastAPI 主入口
 """
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
+from backend.services.scheduler import get_scheduler, start_scheduler, shutdown_scheduler
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时
+    start_scheduler()
+    yield
+    # 关闭时
+    shutdown_scheduler()
+
 
 app = FastAPI(
     title="iFlow Chat API",
     description="iFlow 对话网页应用后端 API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS 配置
@@ -35,13 +49,13 @@ async def health():
 
 
 # 导入并注册路由
-from backend.routers import auth, websocket
+from backend.routers import auth, websocket, chat
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(websocket.router, tags=["websocket"])
+app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 
 # 后续路由将在对应功能中添加
-# from backend.routers import chat, tasks, notifications
-# app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+# from backend.routers import tasks, notifications
 # app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 # app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
