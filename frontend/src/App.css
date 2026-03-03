@@ -106,6 +106,93 @@ body {
   color: #666;
 }
 
+/* 通知导航按钮 */
+.notification-nav-btn {
+  position: relative;
+  color: white;
+  text-decoration: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+  background: transparent;
+  border: none;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.notification-nav-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.notification-nav-btn.active {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* 未读角标 */
+.notification-unread-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background-color: #ff4757;
+  color: white;
+  font-size: 11px;
+  font-weight: bold;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* 通知弹窗 */
+.notification-popup {
+  position: fixed;
+  top: 70px;
+  right: 20px;
+  z-index: 1000;
+  animation: slideIn 0.2s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 通知页面 */
+.notifications-page {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 20px;
+}
+
+/* 导航链接激活状态 */
+.header-nav a.active {
+  background-color: rgba(255, 255, 255, 0.2);
+  font-weight: 500;
+}
+
 /* 响应式布局 */
 @media (max-width: 768px) {
   .app-header {
@@ -128,5 +215,24 @@ body {
 
   .app-main {
     padding: 10px;
+  }
+
+  .notification-nav-btn {
+    padding: 6px 10px;
+    font-size: 0.9rem;
+  }
+
+  .notification-unread-badge {
+    min-width: 16px;
+    height: 16px;
+    font-size: 10px;
+    top: -2px;
+    right: -2px;
+  }
+
+  .notification-popup {
+    top: 60px;
+    right: 10px;
+    left: 10px;
   }
 }
