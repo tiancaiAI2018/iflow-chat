@@ -1,0 +1,462 @@
+"""
+WebSocket 路由
+处理 WebSocket 连接、消息路由、认证验证
+"""
+import asyncio
+import logging
+import json
+from typing import Optional
+from datetime import datetime
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends
+from pydantic import BaseModel, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.services.websocket_manager import (
+    WebSocketManager,
+    get_websocket_manager,
+    ConnectionStatus,
+)
+from backend.services.auth import decode_access_token
+from backend.services.iflow_client import (
+    IFlowClientService,
+    get_iflow_client,
+    MessageType as IFlowMessageType,
+)
+from backend.database import get_db
+from backend.models.user import User, ChatHistory
+from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+# ==================== 消息模型 ====================
+
+class WSMessage(BaseModel):
+    """WebSocket 消息基类"""
+    type: str
+
+
+class ChatMessage(WSMessage):
+    """聊天消息"""
+    type: str = "chat"
+    content: str
+
+
+class AuthMessage(WSMessage):
+    """认证消息"""
+    type: str = "auth"
+    token: str
+
+
+class PingMessage(WSMessage):
+    """心跳消息"""
+    type: str = "ping"
+
+
+# ==================== 响应模型 ====================
+
+class WSResponse(BaseModel):
+    """WebSocket 响应基类"""
+    type: str
+    timestamp: str = ""
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        self.timestamp = datetime.now().isoformat()
+
+
+class AuthSuccessResponse(WSResponse):
+    """认证成功响应"""
+    type: str = "auth_success"
+    user_id: int
+    username: str
+
+
+class AuthFailedResponse(WSResponse):
+    """认证失败响应"""
+    type: str = "auth_failed"
+    message: str
+
+
+class PongResponse(WSResponse):
+    """心跳响应"""
+    type: str = "pong"
+
+
+class AssistantMessageResponse(WSResponse):
+    """助手消息响应"""
+    type: str = "assistant_message"
+    content: str
+    is_delta: bool = True
+    is_finished: bool = False
+
+
+class ToolCallResponse(WSResponse):
+    """工具调用响应"""
+    type: str = "tool_call"
+    tool_name: str
+    arguments: dict = {}
+    status: str  # pending, in_progress, completed, failed
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class NotificationResponse(WSResponse):
+    """通知推送响应"""
+    type: str = "notification"
+    notification: dict
+
+
+class ErrorResponse(WSResponse):
+    """错误响应"""
+    type: str = "error"
+    message: str
+    code: Optional[str] = None
+
+
+class ConnectionStatusResponse(WSResponse):
+    """连接状态响应"""
+    type: str = "connection_status"
+    status: str
+    message: str
+
+
+# ==================== WebSocket 端点 ====================
+
+@router.websocket("/ws/{user_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    user_id: int,
+    token: Optional[str] = Query(None),
+    manager: WebSocketManager = Depends(get_websocket_manager),
+):
+    """
+    WebSocket 连接端点
+    
+    连接流程：
+    1. 客户端连接 WebSocket
+    2. 可选：通过 query 参数传递 token 进行认证
+    3. 或：连接后发送 auth 消息进行认证
+    4. 认证成功后可以发送 chat 消息
+    5. 服务器返回 assistant_message、tool_call 等消息
+    
+    消息格式：
+    - 认证：{"type": "auth", "token": "xxx"}
+    - 聊天：{"type": "chat", "content": "你好"}
+    - 心跳：{"type": "ping"}
+    """
+    # 接受连接
+    await websocket.accept()
+    
+    # 注册连接
+    conn_info = await manager.connect(websocket, user_id)
+    connection_id = conn_info.connection_id
+    
+    logger.info(f"WebSocket connection established: user_id={user_id}, connection_id={connection_id}")
+    
+    # 发送连接状态
+    await websocket.send_json(
+        ConnectionStatusResponse(
+            status="connected",
+            message="WebSocket connected, please authenticate"
+        ).model_dump()
+    )
+    
+    # 如果 query 参数中有 token，尝试认证
+    if token:
+        authenticated = await authenticate_connection(
+            websocket, manager, connection_id, user_id, token
+        )
+        if not authenticated:
+            await manager.disconnect(connection_id)
+            return
+    
+    # 用户数据库会话
+    db_gen = get_db()
+    db = await anext(db_gen)
+    
+    # iFlow 客户端（每个连接独立）
+    iflow_client: Optional[IFlowClientService] = None
+    
+    try:
+        # 消息循环
+        while True:
+            # 接收消息
+            try:
+                raw_data = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=300.0  # 5分钟超时
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"WebSocket timeout: connection_id={connection_id}")
+                await websocket.send_json(
+                    ErrorResponse(
+                        message="Connection timeout",
+                        code="TIMEOUT"
+                    ).model_dump()
+                )
+                break
+            
+            # 解析消息
+            try:
+                data = json.loads(raw_data)
+                msg_type = data.get("type")
+            except json.JSONDecodeError:
+                await websocket.send_json(
+                    ErrorResponse(
+                        message="Invalid JSON format",
+                        code="INVALID_JSON"
+                    ).model_dump()
+                )
+                continue
+            
+            # 处理不同类型的消息
+            if msg_type == "auth":
+                # 认证消息
+                token = data.get("token")
+                if token:
+                    await authenticate_connection(
+                        websocket, manager, connection_id, user_id, token
+                    )
+                else:
+                    await websocket.send_json(
+                        AuthFailedResponse(message="Token required").model_dump()
+                    )
+            
+            elif msg_type == "ping":
+                # 心跳消息
+                await websocket.send_json(PongResponse().model_dump())
+            
+            elif msg_type == "chat":
+                # 聊天消息
+                if not manager.is_authenticated(connection_id):
+                    await websocket.send_json(
+                        ErrorResponse(
+                            message="Please authenticate first",
+                            code="NOT_AUTHENTICATED"
+                        ).model_dump()
+                    )
+                    continue
+                
+                content = data.get("content", "")
+                if not content.strip():
+                    continue
+                
+                # 处理聊天消息
+                await handle_chat_message(
+                    websocket=websocket,
+                    manager=manager,
+                    connection_id=connection_id,
+                    user_id=user_id,
+                    content=content,
+                    db=db,
+                    iflow_client=iflow_client,
+                )
+            
+            else:
+                await websocket.send_json(
+                    ErrorResponse(
+                        message=f"Unknown message type: {msg_type}",
+                        code="UNKNOWN_TYPE"
+                    ).model_dump()
+                )
+    
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected: connection_id={connection_id}")
+    
+    except Exception as e:
+        logger.error(f"WebSocket error: connection_id={connection_id}, error={e}")
+        try:
+            await websocket.send_json(
+                ErrorResponse(
+                    message=str(e),
+                    code="INTERNAL_ERROR"
+                ).model_dump()
+            )
+        except:
+            pass
+    
+    finally:
+        # 清理资源
+        await manager.disconnect(connection_id)
+        
+        # 关闭 iFlow 客户端
+        if iflow_client:
+            try:
+                await iflow_client.disconnect()
+            except:
+                pass
+        
+        # 关闭数据库会话
+        try:
+            await db_gen.aclose()
+        except:
+            pass
+
+
+# ==================== 辅助函数 ====================
+
+async def authenticate_connection(
+    websocket: WebSocket,
+    manager: WebSocketManager,
+    connection_id: str,
+    expected_user_id: int,
+    token: str,
+) -> bool:
+    """
+    认证 WebSocket 连接
+    
+    Args:
+        websocket: WebSocket 连接
+        manager: WebSocket 管理器
+        connection_id: 连接 ID
+        expected_user_id: 预期的用户 ID
+        token: JWT Token
+    
+    Returns:
+        bool: 是否认证成功
+    """
+    # 解码 token
+    payload = decode_access_token(token)
+    
+    if payload is None:
+        await websocket.send_json(
+            AuthFailedResponse(message="Invalid token").model_dump()
+        )
+        return False
+    
+    # 验证用户 ID
+    token_user_id = payload.get("sub")
+    if token_user_id != expected_user_id:
+        await websocket.send_json(
+            AuthFailedResponse(message="User ID mismatch").model_dump()
+        )
+        return False
+    
+    # 标记为已认证
+    await manager.authenticate(connection_id)
+    
+    # 发送认证成功响应
+    await websocket.send_json(
+        AuthSuccessResponse(
+            user_id=expected_user_id,
+            username=payload.get("username", "")
+        ).model_dump()
+    )
+    
+    logger.info(f"WebSocket authenticated: user_id={expected_user_id}, connection_id={connection_id}")
+    return True
+
+
+async def handle_chat_message(
+    websocket: WebSocket,
+    manager: WebSocketManager,
+    connection_id: str,
+    user_id: int,
+    content: str,
+    db: AsyncSession,
+    iflow_client: Optional[IFlowClientService],
+):
+    """
+    处理聊天消息
+    
+    Args:
+        websocket: WebSocket 连接
+        manager: WebSocket 管理器
+        connection_id: 连接 ID
+        user_id: 用户 ID
+        content: 消息内容
+        db: 数据库会话
+        iflow_client: iFlow 客户端（可选）
+    """
+    logger.debug(f"Handling chat message: user_id={user_id}, content={content[:50]}...")
+    
+    # 保存用户消息到数据库
+    user_msg = ChatHistory(
+        user_id=user_id,
+        role="user",
+        content=content,
+    )
+    db.add(user_msg)
+    await db.commit()
+    
+    # 创建或重用 iFlow 客户端
+    if iflow_client is None:
+        iflow_client = IFlowClientService()
+        try:
+            await iflow_client.connect()
+        except Exception as e:
+            logger.error(f"Failed to connect to iFlow: {e}")
+            await websocket.send_json(
+                ErrorResponse(
+                    message="Failed to connect to AI service",
+                    code="IFLOW_ERROR"
+                ).model_dump()
+            )
+            return
+    
+    # 发送消息到 iFlow 并处理响应
+    full_response = []
+    
+    try:
+        async for msg in iflow_client.query_stream(content):
+            if msg.type == IFlowMessageType.TEXT:
+                # 文本消息
+                if msg.content:
+                    full_response.append(msg.content)
+                
+                await websocket.send_json(
+                    AssistantMessageResponse(
+                        content=msg.content,
+                        is_delta=msg.is_delta,
+                        is_finished=msg.is_finished,
+                    ).model_dump()
+                )
+            
+            elif msg.type == IFlowMessageType.TOOL_CALL:
+                # 工具调用
+                await websocket.send_json(
+                    ToolCallResponse(
+                        tool_name=msg.tool_name or "",
+                        arguments=msg.tool_arguments or {},
+                        status=msg.tool_status or "pending",
+                        result=msg.tool_result,
+                        error=msg.tool_error,
+                    ).model_dump()
+                )
+            
+            elif msg.type == IFlowMessageType.ERROR:
+                # 错误
+                await websocket.send_json(
+                    ErrorResponse(
+                        message=msg.content,
+                        code="IFLOW_ERROR"
+                    ).model_dump()
+                )
+            
+            elif msg.type == IFlowMessageType.TASK_FINISH:
+                # 任务完成
+                pass
+    
+    except Exception as e:
+        logger.error(f"Error processing chat message: {e}")
+        await websocket.send_json(
+            ErrorResponse(
+                message=str(e),
+                code="PROCESSING_ERROR"
+            ).model_dump()
+        )
+        return
+    
+    # 保存助手响应到数据库
+    if full_response:
+        assistant_msg = ChatHistory(
+            user_id=user_id,
+            role="assistant",
+            content="".join(full_response),
+        )
+        db.add(assistant_msg)
+        await db.commit()
