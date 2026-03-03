@@ -1,12 +1,11 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
+import { Login, Register, LoginEmail } from './components/Auth';
+import { Chat } from './components/Chat';
 import './App.css';
 
 // 临时占位组件（后续功能开发时替换）
-const LoginPage: React.FC = () => <div className="page-placeholder">登录页面 (开发中)</div>;
-const RegisterPage: React.FC = () => <div className="page-placeholder">注册页面 (开发中)</div>;
-const ChatPage: React.FC = () => <div className="page-placeholder">对话页面 (开发中)</div>;
 const TasksPage: React.FC = () => <div className="page-placeholder">任务管理页面 (开发中)</div>;
 const NotificationsPage: React.FC = () => <div className="page-placeholder">通知页面 (开发中)</div>;
 
@@ -53,15 +52,16 @@ function App() {
     <BrowserRouter>
       <Routes>
         {/* 公开路由 */}
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/login-email" element={<LoginEmail />} />
+        <Route path="/register" element={<Register />} />
 
         {/* 受保护路由 */}
         <Route
           path="/chat"
           element={
             <ProtectedRoute>
-              <AppLayout><ChatPage /></AppLayout>
+              <AppLayout><Chat /></AppLayout>
             </ProtectedRoute>
           }
         />

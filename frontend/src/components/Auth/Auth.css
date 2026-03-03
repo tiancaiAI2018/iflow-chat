@@ -1,0 +1,319 @@
+/* 认证页面容器 */
+.auth-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* 认证卡片 */
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  background: white;
+  border-radius: 12px;
+  padding: 32px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+}
+
+/* 标题样式 */
+.auth-title {
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.auth-subtitle {
+  font-size: 0.95rem;
+  color: #666;
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+/* 表单样式 */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #333;
+}
+
+.form-group input {
+  padding: 12px 14px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 1rem;
+  transition: all 0.2s ease;
+  background-color: #fafafa;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #667eea;
+  background-color: white;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+.form-group input::placeholder {
+  color: #aaa;
+}
+
+/* 错误提示 */
+.auth-error {
+  padding: 12px;
+  background-color: #fff5f5;
+  border: 1px solid #fed7d7;
+  border-radius: 8px;
+  color: #c53030;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* 成功提示 */
+.auth-success {
+  padding: 12px;
+  background-color: #f0fff4;
+  border: 1px solid #c6f6d5;
+  border-radius: 8px;
+  color: #276749;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* 按钮样式 */
+.auth-btn {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.auth-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.auth-btn.primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.auth-btn.primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.auth-btn.secondary {
+  background-color: #f7f7f7;
+  color: #333;
+  border: 1px solid #ddd;
+}
+
+.auth-btn.secondary:hover:not(:disabled) {
+  background-color: #eee;
+}
+
+.auth-btn.email-btn {
+  background-color: #e6f4ff;
+  color: #1a73e8;
+  border: 1px solid #b3d9ff;
+}
+
+.auth-btn.email-btn:hover:not(:disabled) {
+  background-color: #cce5ff;
+}
+
+/* 分割线 */
+.auth-divider {
+  display: flex;
+  align-items: center;
+  margin: 20px 0;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background-color: #e0e0e0;
+}
+
+.auth-divider span {
+  padding: 0 16px;
+  color: #999;
+  font-size: 0.9rem;
+}
+
+/* 底部链接 */
+.auth-footer {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.auth-footer a {
+  color: #667eea;
+  text-decoration: none;
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.auth-footer a:hover {
+  text-decoration: underline;
+}
+
+/* 验证码输入相关 */
+.code-input-group {
+  display: flex;
+  gap: 12px;
+}
+
+.code-input-group input {
+  flex: 1;
+}
+
+.code-btn {
+  white-space: nowrap;
+  padding: 12px 16px;
+  min-width: 110px;
+}
+
+/* 邮箱验证码登录页面 */
+.email-login-tip {
+  font-size: 0.85rem;
+  color: #888;
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+/* 响应式设计 */
+@media (max-width: 480px) {
+  .auth-container {
+    padding: 16px;
+  }
+
+  .auth-card {
+    padding: 24px;
+  }
+
+  .auth-title {
+    font-size: 1.5rem;
+  }
+
+  .form-group input {
+    padding: 10px 12px;
+    font-size: 0.95rem;
+  }
+
+  .auth-btn {
+    padding: 10px 20px;
+    font-size: 0.95rem;
+  }
+
+  .code-input-group {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .code-btn {
+    width: 100%;
+  }
+}
+
+/* 邮箱验证码组件特有样式 */
+.email-code-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.email-display {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background-color: #f7f7f7;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.email-display span {
+  color: #333;
+  font-size: 0.95rem;
+}
+
+.email-display button {
+  background: none;
+  border: none;
+  color: #667eea;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0;
+}
+
+.email-display button:hover {
+  text-decoration: underline;
+}
+
+/* 验证码输入框 */
+.code-inputs {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin: 16px 0;
+}
+
+.code-input {
+  width: 48px;
+  height: 56px;
+  text-align: center;
+  font-size: 1.5rem;
+  font-weight: 600;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background-color: #fafafa;
+  transition: all 0.2s ease;
+}
+
+.code-input:focus {
+  outline: none;
+  border-color: #667eea;
+  background-color: white;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+.code-input.filled {
+  border-color: #667eea;
+  background-color: #f0f4ff;
+}
+
+/* 计时器样式 */
+.timer-text {
+  text-align: center;
+  font-size: 0.9rem;
+  color: #888;
+  margin-top: 8px;
+}
+
+.timer-text.counting {
+  color: #667eea;
+}
