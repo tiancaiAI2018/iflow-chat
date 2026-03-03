@@ -1,0 +1,12 @@
+nohup: ignoring input
+[ACP] starting server with: {
+  "workspace": "/root/.iflow-bot/workspace/mybot",
+  "port": "8090",
+  "verbose": false,
+  "disableTools": false,
+  "stream": true
+}
+🚀 iFlow ACP Server running at ws://127.0.0.1:8090/acp
+[WS 1] open connection (total=1) peer=undefined origin=undefined
+[WS 1] About to call startEmbeddedGeminiPeer
+[ACP Web Peer] ACP adapter factory initialized
