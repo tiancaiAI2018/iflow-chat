@@ -55,13 +55,10 @@ async def health():
 
 
 # 导入并注册路由
-from backend.routers import auth, websocket, chat, tasks
+from backend.routers import auth, websocket, chat, tasks, notifications
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(websocket.router, tags=["websocket"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
-
-# 后续路由将在对应功能中添加
-# from backend.routers import notifications
-# app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
+app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])

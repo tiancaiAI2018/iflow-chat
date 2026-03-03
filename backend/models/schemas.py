@@ -145,3 +145,41 @@ class TaskToggleResponse(BaseModel):
     success: bool = True
     task: TaskResponse
     message: str
+
+
+# ==================== 通知相关 ====================
+
+class NotificationResponse(BaseModel):
+    """通知响应模型"""
+    id: str
+    task_id: Optional[str] = None
+    content: str
+    read: bool = False
+    created_at: str
+
+
+class NotificationListResponse(BaseModel):
+    """通知列表响应模型"""
+    success: bool = True
+    notifications: list[NotificationResponse]
+    unread_count: int = 0
+    total: int = 0
+
+
+class NotificationMarkReadResponse(BaseModel):
+    """标记已读响应模型"""
+    success: bool = True
+    message: str
+
+
+class NotificationMarkAllReadResponse(BaseModel):
+    """标记全部已读响应模型"""
+    success: bool = True
+    message: str
+    count: int = 0
+
+
+class NotificationDeleteResponse(BaseModel):
+    """删除通知响应模型"""
+    success: bool = True
+    message: str
