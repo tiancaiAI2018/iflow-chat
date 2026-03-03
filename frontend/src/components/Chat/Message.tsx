@@ -3,6 +3,7 @@ import { marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
 import type { ToolCall } from '../../types';
+import { ToolCallList } from '../ToolCall/ToolCall';
 import './Chat.css';
 
 interface MessageProps {
@@ -39,51 +40,6 @@ const renderMarkdown = (content: string): string => {
   }
 };
 
-// 工具调用卡片组件
-const ToolCallCard: React.FC<{ toolCall: ToolCall }> = ({ toolCall }) => {
-  const [isExpanded, setIsExpanded] = React.useState(false);
-
-  const statusIcon = {
-    pending: '⏳',
-    in_progress: '🔄',
-    completed: '✅',
-    failed: '❌',
-  }[toolCall.status] || '❓';
-
-  const statusClass = `tool-call-status status-${toolCall.status}`;
-
-  return (
-    <div className="tool-call-card">
-      <div className="tool-call-header" onClick={() => setIsExpanded(!isExpanded)}>
-        <span className="tool-call-icon">🔧</span>
-        <span className="tool-call-name">{toolCall.tool_name}</span>
-        <span className={statusClass}>{statusIcon}</span>
-        <span className="tool-call-expand">{isExpanded ? '▼' : '▶'}</span>
-      </div>
-      {isExpanded && (
-        <div className="tool-call-details">
-          <div className="tool-call-section">
-            <strong>参数:</strong>
-            <pre className="tool-call-code">
-              {JSON.stringify(toolCall.arguments, null, 2)}
-            </pre>
-          </div>
-          {toolCall.result !== undefined && (
-            <div className="tool-call-section">
-              <strong>结果:</strong>
-              <pre className="tool-call-code">
-                {typeof toolCall.result === 'string'
-                  ? toolCall.result
-                  : JSON.stringify(toolCall.result, null, 2)}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
 // 消息组件
 const Message: React.FC<MessageProps> = ({
   role,
@@ -107,11 +63,7 @@ const Message: React.FC<MessageProps> = ({
         )}
         {isStreaming && <span className="message-cursor">▊</span>}
         {toolCalls && toolCalls.length > 0 && (
-          <div className="message-tool-calls">
-            {toolCalls.map((tc, index) => (
-              <ToolCallCard key={`${tc.tool_name}-${index}`} toolCall={tc} />
-            ))}
-          </div>
+          <ToolCallList toolCalls={toolCalls} />
         )}
       </div>
     </div>
