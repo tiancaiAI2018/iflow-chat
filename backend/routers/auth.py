@@ -1,10 +1,11 @@
 """
 iFlow 对话网页应用 - 认证路由
 
-提供用户注册、登录、邮箱验证码等认证相关 API
+提供用户注册、登录、邮箱验证码、Token 刷新等认证相关 API
 """
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,8 +29,14 @@ from backend.services.auth import (
     verify_password,
     create_access_token,
     get_current_user,
+    is_token_expired,
+    should_refresh_token,
+    refresh_access_token,
+    get_token_info,
 )
 from backend.services.email_service import email_service
+
+security = HTTPBearer()
 
 
 router = APIRouter()
@@ -285,3 +292,60 @@ async def get_me(
         success=True,
         user=UserResponse.model_validate(current_user)
     )
+
+
+@router.post(
+    "/refresh",
+    response_model=LoginResponse,
+    responses={
+        401: {"model": ErrorResponse},
+    },
+    summary="刷新 Token",
+    description="使用当前 Token 刷新获取新的 Token（Token 即将过期时使用）"
+)
+async def refresh_token(
+    current_user: User = Depends(get_current_user)
+) -> LoginResponse:
+    """
+    刷新 Token 接口
+    
+    需要在 Header 中携带有效的 JWT Token:
+    Authorization: Bearer <token>
+    
+    - 如果 Token 已过期，将返回 401 错误
+    - 如果 Token 有效，将返回新的 Token
+    """
+    # 生成新的 Token
+    new_token = create_access_token({"sub": current_user.id, "username": current_user.username})
+    
+    return LoginResponse(
+        success=True,
+        token=new_token,
+        user=UserResponse.model_validate(current_user)
+    )
+
+
+@router.get(
+    "/token-info",
+    summary="获取 Token 信息",
+    description="获取当前 Token 的详细信息（有效期、是否需要刷新等）"
+)
+async def token_info(
+    current_user: User = Depends(get_current_user),
+    credentials = Depends(security),
+):
+    """
+    获取 Token 详细信息接口
+    
+    返回 Token 的有效期、是否需要刷新等信息
+    """
+    from fastapi.security import HTTPBearer
+    from backend.services.auth import get_token_info
+    
+    token = credentials.credentials
+    info = get_token_info(token)
+    
+    return {
+        "success": True,
+        "token_info": info,
+    }

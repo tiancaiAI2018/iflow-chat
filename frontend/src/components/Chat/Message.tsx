@@ -16,17 +16,9 @@ interface MessageProps {
 }
 
 // 配置 marked 使用 highlight.js
+const renderer = new marked.Renderer();
 marked.setOptions({
-  highlight: function (code: string, lang: string) {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return hljs.highlight(code, { language: lang }).value;
-      } catch {
-        return code;
-      }
-    }
-    return hljs.highlightAuto(code).value;
-  },
+  renderer,
   breaks: true,
   gfm: true,
 });
@@ -34,7 +26,14 @@ marked.setOptions({
 // 渲染 Markdown 内容
 const renderMarkdown = (content: string): string => {
   try {
-    return marked.parse(content) as string;
+    const html = marked.parse(content) as string;
+    // 对代码块应用 highlight.js
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    container.querySelectorAll('pre code').forEach((block) => {
+      hljs.highlightElement(block as HTMLElement);
+    });
+    return container.innerHTML;
   } catch {
     return content;
   }

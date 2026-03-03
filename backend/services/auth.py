@@ -2,9 +2,10 @@
 iFlow 对话网页应用 - JWT 认证服务
 
 提供 JWT Token 生成/验证和密码哈希/验证功能
+包含 Token 过期检测和刷新支持
 """
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 
 from jose import jwt, JWTError
 from passlib.context import CryptContext
@@ -23,6 +24,9 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # HTTP Bearer 认证方案
 security = HTTPBearer()
+
+# Token 刷新阈值（分钟）- Token 过期前多少分钟可以刷新
+TOKEN_REFRESH_THRESHOLD_MINUTES = 5
 
 
 def hash_password(password: str) -> str:
@@ -113,6 +117,142 @@ def decode_access_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+
+def is_token_expired(token: str) -> bool:
+    """
+    检查 Token 是否已过期
+    
+    Args:
+        token: JWT Token 字符串
+        
+    Returns:
+        bool: 是否已过期
+    """
+    payload = decode_access_token(token)
+    if payload is None:
+        return True
+    
+    if "exp" not in payload:
+        return True
+    
+    exp_time = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    return datetime.now(timezone.utc) > exp_time
+
+
+def should_refresh_token(token: str) -> bool:
+    """
+    检查 Token 是否需要刷新（即将过期）
+    
+    Args:
+        token: JWT Token 字符串
+        
+    Returns:
+        bool: 是否需要刷新
+    """
+    payload = decode_access_token(token)
+    if payload is None:
+        return True
+    
+    if "exp" not in payload:
+        return True
+    
+    exp_time = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    
+    # 如果 Token 将在阈值时间内过期，则需要刷新
+    return (exp_time - now) < timedelta(minutes=TOKEN_REFRESH_THRESHOLD_MINUTES)
+
+
+def refresh_access_token(token: str) -> Optional[str]:
+    """
+    刷新 Token
+    
+    如果 Token 有效但即将过期，生成新的 Token
+    
+    Args:
+        token: 旧的 JWT Token 字符串
+        
+    Returns:
+        新的 JWT Token 字符串，如果旧 Token 无效返回 None
+    """
+    payload = decode_access_token(token)
+    if payload is None:
+        return None
+    
+    # 检查是否已过期（过期的 Token 不能刷新）
+    if is_token_expired(token):
+        return None
+    
+    # 提取用户信息
+    user_id = payload.get("sub")
+    username = payload.get("username")
+    
+    if user_id is None:
+        return None
+    
+    # 生成新的 Token
+    new_token_data = {"sub": user_id}
+    if username:
+        new_token_data["username"] = username
+    
+    return create_access_token(new_token_data)
+
+
+def get_token_remaining_time(token: str) -> Optional[timedelta]:
+    """
+    获取 Token 剩余有效时间
+    
+    Args:
+        token: JWT Token 字符串
+        
+    Returns:
+        timedelta: 剩余时间，如果 Token 无效返回 None
+    """
+    payload = decode_access_token(token)
+    if payload is None:
+        return None
+    
+    if "exp" not in payload:
+        return None
+    
+    exp_time = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    
+    remaining = exp_time - now
+    return remaining if remaining > timedelta(0) else timedelta(0)
+
+
+def get_token_info(token: str) -> Dict[str, Any]:
+    """
+    获取 Token 详细信息
+    
+    Args:
+        token: JWT Token 字符串
+        
+    Returns:
+        Dict: Token 信息
+    """
+    payload = decode_access_token(token)
+    
+    if payload is None:
+        return {
+            "valid": False,
+            "expired": True,
+            "should_refresh": False,
+        }
+    
+    expired = is_token_expired(token)
+    remaining = get_token_remaining_time(token)
+    
+    return {
+        "valid": not expired,
+        "expired": expired,
+        "should_refresh": should_refresh_token(token) and not expired,
+        "remaining_seconds": remaining.total_seconds() if remaining else 0,
+        "user_id": payload.get("sub"),
+        "username": payload.get("username"),
+    }
 
 
 async def get_current_user(

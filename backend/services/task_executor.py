@@ -1,10 +1,12 @@
 """
 任务执行服务
 定时任务触发后执行：调用 iFlow、保存通知、WebSocket 推送
+包含错误处理和重试机制
 """
 import asyncio
 import logging
 from typing import Optional, Dict, Any
+from datetime import datetime
 
 from backend.services.iflow_client import IFlowClientService, MessageType
 from backend.services.websocket_manager import get_websocket_manager, WebSocketManager
@@ -17,15 +19,21 @@ class TaskExecutor:
     """
     任务执行器
     执行定时任务：调用 iFlow、保存通知、WebSocket 推送
+    包含错误处理和重试机制
     """
     
     def __init__(
         self,
         notification_store: Optional[NotificationStore] = None,
         websocket_manager: Optional[WebSocketManager] = None,
+        max_retries: int = 3,
+        retry_delay: float = 5.0,
     ):
         self.notification_store = notification_store or NotificationStore()
         self.websocket_manager = websocket_manager or get_websocket_manager()
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self._execution_history: Dict[str, list] = {}  # 任务执行历史
     
     async def execute_task(
         self,
@@ -34,7 +42,7 @@ class TaskExecutor:
         content: str,
     ) -> Dict[str, Any]:
         """
-        执行任务
+        执行任务（带重试机制）
         
         Args:
             user_id: 用户 ID
@@ -55,49 +63,104 @@ class TaskExecutor:
             "error": None,
             "notification": None,
             "pushed": False,
+            "retries": 0,
+            "executed_at": datetime.now().isoformat(),
         }
         
-        try:
-            # 1. 调用 iFlow 执行任务
-            response = await self._call_iflow(content)
-            result["response"] = response
-            result["success"] = True
-            
-            # 2. 构建通知内容
-            notification_content = self._build_notification_content(task_id, content, response)
-            
-            # 3. 保存通知到文件（必须执行）
-            notification = self.notification_store.add_notification(
-                user_id=user_id,
-                task_id=task_id,
-                content=notification_content,
-            )
-            result["notification"] = notification
-            
-            # 4. 检测用户在线状态，在线则 WebSocket 推送
-            if self.websocket_manager.is_user_online(user_id):
-                pushed = await self._push_notification(user_id, notification)
-                result["pushed"] = pushed
-            
-            logger.info(f"Task executed successfully: task_id={task_id}, pushed={result['pushed']}")
-            
-        except Exception as e:
-            logger.error(f"Task execution failed: task_id={task_id}, error={e}")
-            result["error"] = str(e)
-            
-            # 即使执行失败，也保存失败通知
+        last_error = None
+        
+        # 带重试的执行
+        for retry_count in range(self.max_retries + 1):
             try:
-                notification_content = f"【定时任务执行失败】\n任务内容: {content}\n错误: {str(e)}"
+                # 1. 调用 iFlow 执行任务
+                response = await self._call_iflow(content)
+                result["response"] = response
+                result["success"] = True
+                result["retries"] = retry_count
+                
+                # 2. 构建通知内容
+                notification_content = self._build_notification_content(task_id, content, response)
+                
+                # 3. 保存通知到文件（必须执行）
                 notification = self.notification_store.add_notification(
                     user_id=user_id,
                     task_id=task_id,
                     content=notification_content,
                 )
                 result["notification"] = notification
-            except Exception as save_error:
-                logger.error(f"Failed to save failure notification: {save_error}")
+                
+                # 4. 检测用户在线状态，在线则 WebSocket 推送
+                if self.websocket_manager.is_user_online(user_id):
+                    pushed = await self._push_notification(user_id, notification)
+                    result["pushed"] = pushed
+                
+                logger.info(f"Task executed successfully: task_id={task_id}, pushed={result['pushed']}, retries={retry_count}")
+                
+                # 记录执行历史
+                self._record_execution(task_id, result)
+                
+                return result
+                
+            except Exception as e:
+                last_error = e
+                result["retries"] = retry_count
+                
+                if retry_count < self.max_retries:
+                    logger.warning(
+                        f"Task execution failed (attempt {retry_count + 1}): {e}. "
+                        f"Retrying in {self.retry_delay}s..."
+                    )
+                    await asyncio.sleep(self.retry_delay)
+                else:
+                    logger.error(f"Task execution failed after {self.max_retries + 1} attempts: {e}")
+        
+        # 所有重试都失败
+        result["error"] = str(last_error)
+        
+        # 即使执行失败，也保存失败通知
+        try:
+            notification_content = f"【定时任务执行失败】\n任务内容: {content}\n错误: {str(last_error)}\n重试次数: {self.max_retries}"
+            notification = self.notification_store.add_notification(
+                user_id=user_id,
+                task_id=task_id,
+                content=notification_content,
+            )
+            result["notification"] = notification
+        except Exception as save_error:
+            logger.error(f"Failed to save failure notification: {save_error}")
+        
+        # 记录执行历史
+        self._record_execution(task_id, result)
         
         return result
+    
+    def _record_execution(self, task_id: str, result: Dict[str, Any]):
+        """
+        记录任务执行历史
+        
+        Args:
+            task_id: 任务 ID
+            result: 执行结果
+        """
+        if task_id not in self._execution_history:
+            self._execution_history[task_id] = []
+        
+        # 只保留最近 10 次执行记录
+        self._execution_history[task_id].append(result)
+        if len(self._execution_history[task_id]) > 10:
+            self._execution_history[task_id] = self._execution_history[task_id][-10:]
+    
+    def get_execution_history(self, task_id: str) -> list:
+        """
+        获取任务执行历史
+        
+        Args:
+            task_id: 任务 ID
+        
+        Returns:
+            list: 执行历史列表
+        """
+        return self._execution_history.get(task_id, [])
     
     async def _call_iflow(self, message: str) -> str:
         """

@@ -1,12 +1,13 @@
 """
 iFlow SDK 封装服务
-提供流式对话处理、工具调用消息解析、连接管理等功能
+提供流式对话处理、工具调用消息解析、连接管理、错误恢复等功能
 """
 import asyncio
 import logging
 from typing import AsyncGenerator, Optional, Callable, Any, Dict
 from dataclasses import dataclass
 from enum import Enum
+from datetime import datetime
 
 # iFlow SDK 导入
 from iflow_sdk import (
@@ -54,13 +55,17 @@ class ChatMessage:
 class IFlowClientService:
     """
     iFlow SDK 封装服务
-    提供 WebSocket 连接管理、流式对话处理、工具调用消息解析
+    提供 WebSocket 连接管理、流式对话处理、工具调用消息解析、自动重连
+    包含服务可用性检测和错误恢复
     """
     
     def __init__(
         self,
         url: Optional[str] = None,
         timeout: Optional[float] = None,
+        max_reconnect_attempts: int = 5,
+        reconnect_base_delay: float = 1.0,
+        health_check_interval: float = 60.0,
     ):
         """
         初始化 iFlow 客户端服务
@@ -68,16 +73,28 @@ class IFlowClientService:
         Args:
             url: WebSocket 地址，默认使用配置中的地址
             timeout: 超时时间（秒），默认使用配置中的超时时间
+            max_reconnect_attempts: 最大重连尝试次数
+            reconnect_base_delay: 重连基础延迟（秒）
+            health_check_interval: 健康检查间隔（秒）
         """
         self.url = url or settings.IFLOW_WS_URL
         self.timeout = timeout or settings.IFLOW_TIMEOUT
+        self.max_reconnect_attempts = max_reconnect_attempts
+        self.reconnect_base_delay = reconnect_base_delay
+        self.health_check_interval = health_check_interval
         self._client: Optional[SDKClient] = None
         self._options: Optional[IFlowOptions] = None
         self._is_connected = False
+        self._connection_errors: list = []  # 记录连接错误历史
+        self._last_connect_time: Optional[datetime] = None
+        self._is_service_available = True  # 服务可用性标志
+        self._consecutive_failures = 0  # 连续失败次数
+        self._service_unavailable_threshold = 3  # 判定服务不可用的连续失败阈值
     
     async def connect(self) -> None:
         """
         建立 WebSocket 连接
+        支持自动重试
         """
         if self._is_connected and self._client:
             logger.debug("Already connected to iFlow service")
@@ -89,15 +106,40 @@ class IFlowClientService:
             timeout=self.timeout,
         )
         
-        try:
-            self._client = SDKClient(options=self._options)
-            await self._client.__aenter__()
-            self._is_connected = True
-            logger.info(f"Connected to iFlow service: {self.url}")
-        except Exception as e:
-            logger.error(f"Failed to connect to iFlow service: {e}")
-            self._is_connected = False
-            raise
+        last_error = None
+        for attempt in range(self.max_reconnect_attempts):
+            try:
+                self._client = SDKClient(options=self._options)
+                await self._client.__aenter__()
+                self._is_connected = True
+                self._last_connect_time = datetime.now()
+                self._connection_errors = []  # 清空错误历史
+                self._record_success()  # 记录成功连接
+                logger.info(f"Connected to iFlow service: {self.url}")
+                return
+            except Exception as e:
+                last_error = e
+                self._connection_errors.append({
+                    "time": datetime.now().isoformat(),
+                    "error": str(e),
+                    "attempt": attempt + 1,
+                })
+                self._record_failure(str(e))  # 记录失败
+                
+                if attempt < self.max_reconnect_attempts - 1:
+                    delay = self.reconnect_base_delay * (2 ** attempt)  # 指数退避
+                    logger.warning(
+                        f"Connection attempt {attempt + 1} failed: {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+        
+        # 所有尝试都失败
+        logger.error(f"Failed to connect to iFlow service after {self.max_reconnect_attempts} attempts")
+        self._is_connected = False
+        raise ConnectionError(
+            f"Failed to connect to iFlow service after {self.max_reconnect_attempts} attempts: {last_error}"
+        )
     
     async def disconnect(self) -> None:
         """
@@ -113,22 +155,83 @@ class IFlowClientService:
                 self._client = None
                 self._is_connected = False
     
-    async def reconnect(self) -> None:
+    async def reconnect(self) -> bool:
         """
         重新连接
+        
+        Returns:
+            bool: 是否重连成功
         """
-        await self.disconnect()
-        await self.connect()
+        try:
+            await self.disconnect()
+            await self.connect()
+            return True
+        except Exception as e:
+            logger.error(f"Reconnect failed: {e}")
+            return False
     
     @property
     def is_connected(self) -> bool:
         """检查是否已连接"""
         return self._is_connected and self._client is not None
     
+    def get_connection_errors(self) -> list:
+        """
+        获取连接错误历史
+        
+        Returns:
+            list: 错误历史列表
+        """
+        return self._connection_errors.copy()
+    
+    def get_connection_status(self) -> Dict[str, Any]:
+        """
+        获取连接状态信息
+        
+        Returns:
+            Dict: 状态信息
+        """
+        return {
+            "is_connected": self.is_connected,
+            "is_service_available": self._is_service_available,
+            "url": self.url,
+            "last_connect_time": self._last_connect_time.isoformat() if self._last_connect_time else None,
+            "error_count": len(self._connection_errors),
+            "consecutive_failures": self._consecutive_failures,
+            "last_error": self._connection_errors[-1] if self._connection_errors else None,
+        }
+    
+    def _record_failure(self, error: str):
+        """
+        记录失败并更新服务可用性状态
+        
+        Args:
+            error: 错误信息
+        """
+        self._consecutive_failures += 1
+        
+        if self._consecutive_failures >= self._service_unavailable_threshold:
+            if self._is_service_available:
+                logger.error(
+                    f"iFlow service marked as unavailable after {self._consecutive_failures} consecutive failures"
+                )
+            self._is_service_available = False
+    
+    def _record_success(self):
+        """记录成功并重置失败计数"""
+        self._consecutive_failures = 0
+        self._is_service_available = True
+    
+    @property
+    def is_service_available(self) -> bool:
+        """检查服务是否可用"""
+        return self._is_service_available
+    
     async def query_stream(
         self,
         message: str,
         on_tool_call: Optional[Callable[[ChatMessage], None]] = None,
+        auto_reconnect: bool = True,
     ) -> AsyncGenerator[ChatMessage, None]:
         """
         流式查询处理
@@ -136,17 +239,32 @@ class IFlowClientService:
         Args:
             message: 用户消息
             on_tool_call: 工具调用回调函数
+            auto_reconnect: 是否在连接断开时自动重连
         
         Yields:
             ChatMessage: 解析后的消息
         """
         if not self.is_connected:
-            await self.connect()
+            if auto_reconnect:
+                try:
+                    await self.connect()
+                except Exception as e:
+                    yield ChatMessage(
+                        type=MessageType.ERROR,
+                        content=f"Failed to connect to iFlow service: {str(e)}"
+                    )
+                    return
+            else:
+                yield ChatMessage(
+                    type=MessageType.ERROR,
+                    content="Not connected to iFlow service"
+                )
+                return
         
         if not self._client:
             yield ChatMessage(
                 type=MessageType.ERROR,
-                content="Not connected to iFlow service"
+                content="iFlow client not initialized"
             )
             return
         
@@ -193,14 +311,42 @@ class IFlowClientService:
                 is_finished=True,
             )
             
+            # 记录查询成功
+            self._record_success()
+            
         except asyncio.TimeoutError:
             logger.error("Query timeout")
+            self._record_failure("Query timeout")
             yield ChatMessage(
                 type=MessageType.ERROR,
                 content="Query timeout, please try again"
             )
+        except ConnectionError as e:
+            logger.error(f"Connection error during query: {e}")
+            self._is_connected = False
+            self._record_failure(str(e))
+            self._connection_errors.append({
+                "time": datetime.now().isoformat(),
+                "error": str(e),
+                "type": "query_connection_error",
+            })
+            yield ChatMessage(
+                type=MessageType.ERROR,
+                content=f"Connection lost: {str(e)}. Please try again."
+            )
         except Exception as e:
             logger.error(f"Error during query: {e}")
+            # 检查是否是连接相关问题
+            if "connection" in str(e).lower() or "websocket" in str(e).lower():
+                self._is_connected = False
+                self._record_failure(str(e))
+                self._connection_errors.append({
+                    "time": datetime.now().isoformat(),
+                    "error": str(e),
+                    "type": "query_error",
+                })
+            else:
+                self._record_failure(str(e))
             yield ChatMessage(
                 type=MessageType.ERROR,
                 content=f"Error: {str(e)}"

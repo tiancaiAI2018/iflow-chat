@@ -8,8 +8,10 @@ import type {
   AuthResponse,
   SendMessageRequest,
   ChatHistoryResponse,
+  Message,
   CreateTaskRequest,
   TasksResponse,
+  Task,
   NotificationsResponse,
   Notification,
 } from '../types';
