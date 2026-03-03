@@ -99,3 +99,49 @@ class ErrorResponse(BaseModel):
     success: bool = False
     message: str
     detail: Optional[str] = None
+
+
+# ==================== 定时任务相关 ====================
+
+class TaskCreate(BaseModel):
+    """创建任务请求模型"""
+    description: str = Field(..., min_length=1, max_length=500, description="自然语言描述")
+
+
+class TaskResponse(BaseModel):
+    """任务响应模型"""
+    id: str
+    user_id: int
+    content: str
+    cron: str
+    natural_language: str
+    enabled: bool
+    created_at: str
+    last_run: Optional[str] = None
+    next_run: Optional[str] = None
+
+
+class TaskListResponse(BaseModel):
+    """任务列表响应模型"""
+    success: bool = True
+    tasks: list[TaskResponse]
+
+
+class TaskCreateResponse(BaseModel):
+    """创建任务响应模型"""
+    success: bool = True
+    task: TaskResponse
+    message: str = "任务创建成功"
+
+
+class TaskDeleteResponse(BaseModel):
+    """删除任务响应模型"""
+    success: bool = True
+    message: str = "任务删除成功"
+
+
+class TaskToggleResponse(BaseModel):
+    """切换任务状态响应模型"""
+    success: bool = True
+    task: TaskResponse
+    message: str
