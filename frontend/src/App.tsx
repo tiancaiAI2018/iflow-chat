@@ -3,10 +3,10 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { Login, Register, LoginEmail } from './components/Auth';
 import { Chat } from './components/Chat';
+import { TaskManager } from './components/TaskManager';
 import './App.css';
 
 // 临时占位组件（后续功能开发时替换）
-const TasksPage: React.FC = () => <div className="page-placeholder">任务管理页面 (开发中)</div>;
 const NotificationsPage: React.FC = () => <div className="page-placeholder">通知页面 (开发中)</div>;
 
 // 受保护路由组件
@@ -69,7 +69,7 @@ function App() {
           path="/tasks"
           element={
             <ProtectedRoute>
-              <AppLayout><TasksPage /></AppLayout>
+              <AppLayout><TaskManager /></AppLayout>
             </ProtectedRoute>
           }
         />
