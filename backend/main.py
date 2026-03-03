@@ -34,9 +34,13 @@ async def health():
     return {"status": "healthy"}
 
 
-# 路由将在后续功能中添加
-# from backend.routers import auth, chat, tasks, notifications
-# app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+# 导入并注册路由
+from backend.routers import auth
+
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+
+# 后续路由将在对应功能中添加
+# from backend.routers import chat, tasks, notifications
 # app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 # app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 # app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])

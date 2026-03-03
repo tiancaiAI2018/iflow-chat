@@ -170,7 +170,7 @@ iFlow Chat 团队
             return False, "验证码错误或已使用"
 
         # 检查是否过期
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.utcnow()  # 使用不带时区的 UTC 时间
         if now > verification_code.expires_at:
             return False, "验证码已过期"
 
