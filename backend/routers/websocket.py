@@ -184,8 +184,9 @@ async def websocket_endpoint(
     db_gen = get_db()
     db = await anext(db_gen)
     
-    # iFlow 客户端（每个连接独立）
-    iflow_client: Optional[IFlowClientService] = None
+    # 从 WebSocketManager 获取或创建用户的 iFlow session
+    user_session = manager.get_or_create_user_session(user_id)
+    iflow_client = user_session.iflow_client
     
     try:
         # 消息循环
@@ -252,7 +253,7 @@ async def websocket_endpoint(
                     continue
                 
                 # 处理聊天消息
-                await handle_chat_message(
+                iflow_client = await handle_chat_message(
                     websocket=websocket,
                     manager=manager,
                     connection_id=connection_id,
@@ -287,14 +288,11 @@ async def websocket_endpoint(
     
     finally:
         # 清理资源
-        await manager.disconnect(connection_id)
+        user_id_result = await manager.disconnect(connection_id)
         
-        # 关闭 iFlow 客户端
-        if iflow_client:
-            try:
-                await iflow_client.disconnect()
-            except:
-                pass
+        # 如果用户没有连接了，不立即清理 session（保留一段时间以便重连）
+        # 可以通过定时任务清理不活跃的 session
+        # 这里暂时不清理，让 session 保持
         
         # 关闭数据库会话
         try:
@@ -365,7 +363,7 @@ async def handle_chat_message(
     content: str,
     db: AsyncSession,
     iflow_client: Optional[IFlowClientService],
-):
+) -> Optional[IFlowClientService]:
     """
     处理聊天消息
     
@@ -377,6 +375,9 @@ async def handle_chat_message(
         content: 消息内容
         db: 数据库会话
         iflow_client: iFlow 客户端（可选）
+    
+    Returns:
+        IFlowClientService: 更新后的 iFlow 客户端
     """
     logger.debug(f"Handling chat message: user_id={user_id}, content={content[:50]}...")
     
@@ -389,11 +390,18 @@ async def handle_chat_message(
     db.add(user_msg)
     await db.commit()
     
+    # 获取用户的 session 信息
+    user_session = manager.get_or_create_user_session(user_id)
+    
     # 创建或重用 iFlow 客户端
     if iflow_client is None:
-        iflow_client = IFlowClientService()
+        # 使用用户的 session_id 创建客户端（保持会话上下文）
+        iflow_client = IFlowClientService(session_id=user_session.session_id)
         try:
             await iflow_client.connect()
+            # 更新用户的 session_id
+            if iflow_client.session_id:
+                manager.update_user_session(user_id, session_id=iflow_client.session_id, iflow_client=iflow_client)
         except Exception as e:
             logger.error(f"Failed to connect to iFlow: {e}")
             await websocket.send_json(
@@ -402,7 +410,7 @@ async def handle_chat_message(
                     code="IFLOW_ERROR"
                 ).model_dump()
             )
-            return
+            return iflow_client
     
     # 发送消息到 iFlow 并处理响应
     # 启用定时任务意图检测
@@ -464,7 +472,7 @@ async def handle_chat_message(
                 code="PROCESSING_ERROR"
             ).model_dump()
         )
-        return
+        return iflow_client
     
     # 处理完整的 AI 响应
     response_text = "".join(full_response)
@@ -495,6 +503,8 @@ async def handle_chat_message(
         )
         db.add(assistant_msg)
         await db.commit()
+    
+    return iflow_client
 
 
 async def try_create_task_from_intent(

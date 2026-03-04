@@ -1,6 +1,6 @@
 """
 WebSocket 连接管理服务
-管理用户 WebSocket 连接、消息路由、多标签页支持
+管理用户 WebSocket 连接、消息路由、多标签页支持、iFlow session 管理
 """
 import asyncio
 import logging
@@ -36,6 +36,20 @@ class ConnectionInfo:
         self.last_activity = datetime.now()
 
 
+@dataclass
+class UserSession:
+    """用户 iFlow 会话"""
+    user_id: int
+    session_id: Optional[str] = None  # iFlow session ID
+    iflow_client: Optional[Any] = None  # IFlowClientService 实例
+    created_at: datetime = field(default_factory=datetime.now)
+    last_used: datetime = field(default_factory=datetime.now)
+    
+    def update_used(self):
+        """更新最后使用时间"""
+        self.last_used = datetime.now()
+
+
 class WebSocketManager:
     """
     WebSocket 连接管理器
@@ -44,6 +58,7 @@ class WebSocketManager:
     - 管理用户连接（支持多标签页）
     - 消息路由和广播
     - 连接状态管理
+    - iFlow session 管理（同一用户共享 session）
     """
     
     def __init__(self):
@@ -51,6 +66,8 @@ class WebSocketManager:
         self._connections: Dict[int, Dict[str, ConnectionInfo]] = {}
         # connection_id -> ConnectionInfo 快速查找
         self._connection_map: Dict[str, ConnectionInfo] = {}
+        # user_id -> UserSession 用户的 iFlow 会话
+        self._user_sessions: Dict[int, UserSession] = {}
         # 连接计数器
         self._connection_counter = 0
         # 锁，保证线程安全
@@ -119,7 +136,7 @@ class WebSocketManager:
             # 从用户连接字典中移除
             if user_id in self._connections:
                 self._connections[user_id].pop(connection_id, None)
-                # 如果用户没有连接了，删除整个字典
+                # 如果用户没有连接了，删除整个字典（但不删除 user_session）
                 if not self._connections[user_id]:
                     del self._connections[user_id]
             
@@ -192,6 +209,73 @@ class WebSocketManager:
             user_id for user_id, connections in self._connections.items()
             if any(conn.status == ConnectionStatus.AUTHENTICATED for conn in connections.values())
         ]
+    
+    # ==================== iFlow Session 管理 ====================
+    
+    def get_user_session(self, user_id: int) -> Optional[UserSession]:
+        """
+        获取用户的 iFlow 会话
+        
+        Args:
+            user_id: 用户 ID
+        
+        Returns:
+            UserSession: 用户会话，如果不存在返回 None
+        """
+        return self._user_sessions.get(user_id)
+    
+    def get_or_create_user_session(self, user_id: int) -> UserSession:
+        """
+        获取或创建用户的 iFlow 会话
+        
+        Args:
+            user_id: 用户 ID
+        
+        Returns:
+            UserSession: 用户会话
+        """
+        if user_id not in self._user_sessions:
+            self._user_sessions[user_id] = UserSession(user_id=user_id)
+            logger.info(f"Created new iFlow session for user_id={user_id}")
+        
+        self._user_sessions[user_id].update_used()
+        return self._user_sessions[user_id]
+    
+    def update_user_session(self, user_id: int, session_id: Optional[str] = None, iflow_client: Optional[Any] = None) -> None:
+        """
+        更新用户的 iFlow 会话信息
+        
+        Args:
+            user_id: 用户 ID
+            session_id: iFlow session ID
+            iflow_client: IFlowClientService 实例
+        """
+        session = self.get_or_create_user_session(user_id)
+        
+        if session_id is not None:
+            session.session_id = session_id
+            logger.info(f"Updated iFlow session_id for user_id={user_id}: {session_id}")
+        
+        if iflow_client is not None:
+            session.iflow_client = iflow_client
+    
+    async def cleanup_user_session(self, user_id: int) -> None:
+        """
+        清理用户的 iFlow 会话（当用户断开所有连接时调用）
+        
+        Args:
+            user_id: 用户 ID
+        """
+        session = self._user_sessions.pop(user_id, None)
+        
+        if session and session.iflow_client:
+            try:
+                await session.iflow_client.disconnect()
+                logger.info(f"Cleaned up iFlow session for user_id={user_id}")
+            except Exception as e:
+                logger.error(f"Error cleaning up iFlow session for user_id={user_id}: {e}")
+    
+    # ==================== 消息发送 ====================
     
     async def send_to_connection(
         self,
@@ -304,6 +388,7 @@ class WebSocketManager:
             "authenticated_connections": authenticated_connections,
             "online_users": online_users,
             "users_with_connections": len(self._connections),
+            "users_with_sessions": len(self._user_sessions),
         }
     
     async def cleanup_stale_connections(self, timeout_seconds: int = 300) -> int:

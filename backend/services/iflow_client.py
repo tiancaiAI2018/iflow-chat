@@ -120,6 +120,7 @@ class IFlowClientService:
         max_reconnect_attempts: int = 5,
         reconnect_base_delay: float = 1.0,
         health_check_interval: float = 60.0,
+        session_id: Optional[str] = None,
     ):
         """
         初始化 iFlow 客户端服务
@@ -130,12 +131,14 @@ class IFlowClientService:
             max_reconnect_attempts: 最大重连尝试次数
             reconnect_base_delay: 重连基础延迟（秒）
             health_check_interval: 健康检查间隔（秒）
+            session_id: iFlow 会话 ID，用于保持会话上下文
         """
         self.url = url or settings.IFLOW_WS_URL
         self.timeout = timeout or settings.IFLOW_TIMEOUT
         self.max_reconnect_attempts = max_reconnect_attempts
         self.reconnect_base_delay = reconnect_base_delay
         self.health_check_interval = health_check_interval
+        self.session_id = session_id
         self._client: Optional[SDKClient] = None
         self._options: Optional[IFlowOptions] = None
         self._is_connected = False
@@ -158,6 +161,7 @@ class IFlowClientService:
             url=self.url,
             auto_start_process=False,  # 手动模式，连接已有服务
             timeout=self.timeout,
+            session_id=self.session_id,  # 传入 session_id 保持会话上下文
         )
         
         last_error = None
@@ -169,7 +173,13 @@ class IFlowClientService:
                 self._last_connect_time = datetime.now()
                 self._connection_errors = []  # 清空错误历史
                 self._record_success()  # 记录成功连接
-                logger.info(f"Connected to iFlow service: {self.url}")
+                
+                # 更新 session_id（首次连接时由服务器生成）
+                if hasattr(self._client, 'session_id') and self._client.session_id:
+                    self.session_id = self._client.session_id
+                    logger.info(f"Connected to iFlow service: {self.url}, session_id={self.session_id}")
+                else:
+                    logger.info(f"Connected to iFlow service: {self.url}")
                 return
             except Exception as e:
                 last_error = e
