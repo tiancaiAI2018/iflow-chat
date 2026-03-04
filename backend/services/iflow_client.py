@@ -365,17 +365,31 @@ class IFlowClientService:
         status_map = {
             ToolCallStatus.PENDING: "pending",
             ToolCallStatus.IN_PROGRESS: "in_progress",
+            ToolCallStatus.RUNNING: "running",
             ToolCallStatus.COMPLETED: "completed",
             ToolCallStatus.FAILED: "failed",
         }
         
+        # 获取工具参数（可能是 args 或 arguments）
+        tool_args = getattr(msg, 'args', None) or getattr(msg, 'arguments', None) or {}
+        
+        # 获取结果和错误（需要从 content 中提取）
+        tool_result = None
+        tool_error = None
+        if hasattr(msg, 'content') and msg.content:
+            content = msg.content
+            if hasattr(content, 'result'):
+                tool_result = content.result
+            if hasattr(content, 'error'):
+                tool_error = content.error
+        
         return ChatMessage(
             type=MessageType.TOOL_CALL,
-            tool_name=msg.tool_name,
-            tool_arguments=msg.arguments,
+            tool_name=msg.tool_name or msg.label,
+            tool_arguments=tool_args,
             tool_status=status_map.get(msg.status, "unknown"),
-            tool_result=msg.result if msg.status == ToolCallStatus.COMPLETED else None,
-            tool_error=msg.error if msg.status == ToolCallStatus.FAILED else None,
+            tool_result=tool_result,
+            tool_error=tool_error,
         )
     
     async def query(self, message: str) -> str:

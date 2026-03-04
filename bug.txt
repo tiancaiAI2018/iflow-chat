@@ -45,3 +45,28 @@ if (message.is_finished) {
 2. 检查浏览器 Network 面板，确认 WebSocket 消息
 3. 在前端添加 console.log 追踪消息状态
 4. 检查 React 闭包问题（state 在异步回调中的值）
+
+---
+
+# Bug: ToolCallMessage 属性名错误
+
+## 问题
+发送需要工具调用的消息（如"查看今日A股情况"）时，后端报错：
+```
+'ToolCallMessage' object has no attribute 'arguments'
+```
+
+## 原因
+iflow-sdk 的 `ToolCallMessage` 类属性名是 `args`，不是 `arguments`。
+代码中错误地使用了 `msg.arguments`。
+
+## 修复
+```python
+# iflow_client.py - 使用 getattr 安全获取属性
+tool_args = getattr(msg, 'args', None) or getattr(msg, 'arguments', None) or {}
+```
+
+## 排查方法
+1. 查看后端日志中的具体错误信息
+2. 检查 iflow-sdk 源码中的 ToolCallMessage 类定义
+3. 使用 `grep -A 20 "class ToolCallMessage"` 查看属性列表
