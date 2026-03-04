@@ -171,3 +171,97 @@ return ChatMessage(
 2. 检查 WebSocket 消息顺序
 3. 检查 React 组件 props 是否正确传递
 4. 检查 iFlow SDK 消息结构（ToolCallMessage 属性）
+
+---
+
+# Bug: 工具调用参数和结果不显示
+
+## 问题
+展开工具调用卡片后，参数和结果显示为空或"无结果"，但 WebSocket 实际返回了数据：
+```json
+{
+  "type": "tool_call",
+  "tool_id": "call_xxx",
+  "tool_name": "web_search",
+  "arguments": {"query": "北京天气 2026年3月4日", ...},
+  "status": "completed",
+  "result": "已返回搜索结果..."
+}
+```
+
+## 原因
+
+### iFlow SDK 消息结构
+iFlow SDK 发送两种消息类型：
+1. `ToolCallMessage` - 初始调用（status=pending, args=None, result=None）
+2. `ToolResultMessage` - 结果更新（status=completed, args={...}, result="..."）
+
+### 前端索引问题
+前端使用预计算的索引 `messages.length` 来更新工具调用：
+```typescript
+// 错误：在 setMessages 外部计算索引
+const newIndex = messages.length + (streamingContentRef.current ? 1 : 0);
+toolCallIndexRef.current.set(toolKey, newIndex);
+```
+由于 React 状态更新是异步的，`messages.length` 可能不是最新值，导致索引不准确，更新到错误的消息。
+
+## 修复
+
+### 后端 - 处理 ToolResultMessage
+```python
+# iflow_client.py - 添加 ToolResultMessage 处理
+from iflow_sdk.types import ToolResultMessage
+
+# 在 query_stream 中处理
+elif isinstance(msg, ToolResultMessage):
+    tool_msg = self._parse_tool_result(msg)
+    yield tool_msg
+
+def _parse_tool_result(self, msg: ToolResultMessage) -> ChatMessage:
+    # ToolResultMessage 中 args 和 content.markdown 都有值
+    tool_args = getattr(msg, 'args', None) or {}
+    tool_result = None
+    if hasattr(msg, 'content') and msg.content:
+        if hasattr(msg.content, 'markdown'):
+            tool_result = msg.content.markdown
+    return ChatMessage(
+        type=MessageType.TOOL_CALL,
+        tool_id=msg.id,
+        tool_name=msg.tool_name,
+        tool_arguments=tool_args,
+        tool_status=status_map.get(msg.status, "in_progress"),
+        tool_result=tool_result,
+    )
+```
+
+### 前端 - 使用 findIndex 动态查找
+```typescript
+// useWebSocket.ts - 在 setMessages 回调中动态查找
+case 'tool_call':
+  setMessages((prev) => {
+    // 在当前消息列表中查找是否已存在该工具调用
+    const existingIndex = prev.findIndex(
+      (msg) => msg.role === 'tool_call' && msg.toolCall?.tool_id === message.tool_id
+    );
+    
+    if (existingIndex >= 0) {
+      // 更新已存在的工具调用
+      const updated = [...prev];
+      updated[existingIndex] = { ...updated[existingIndex], toolCall: newToolCall };
+      return updated;
+    } else {
+      // 添加新的工具调用消息
+      return [...prev, { id: `tool-...`, role: 'tool_call', toolCall: newToolCall, ... }];
+    }
+  });
+```
+
+## 排查方法
+1. 检查浏览器 WebSocket 消息，确认后端发送了 arguments 和 result
+2. 检查 iFlow SDK 源码，了解 ToolCallMessage 和 ToolResultMessage 的区别
+3. 使用 Python 直接测试 SDK，观察消息结构：
+   ```python
+   async for msg in client.receive_messages():
+       print(f'{type(msg).__name__}: id={msg.id}, args={msg.args}')
+   ```
+4. 检查 React 状态更新的闭包问题（预计算索引 vs 动态查找）
