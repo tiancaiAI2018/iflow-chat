@@ -14,6 +14,10 @@ import type {
   Task,
   NotificationsResponse,
   Notification,
+  ConversationCreate,
+  ConversationResponse,
+  ConversationListResponse,
+  ConversationDetailResponse,
 } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
@@ -94,6 +98,7 @@ class ApiService {
     page?: number;
     page_size?: number;
     before_id?: number;
+    conversation_id?: number;
   }): Promise<ChatHistoryResponse> {
     const response = await this.api.get<ChatHistoryResponse>('/chat/history', { params });
     return response.data;
@@ -101,6 +106,39 @@ class ApiService {
 
   async clearChatHistory(): Promise<{ success: boolean }> {
     const response = await this.api.delete<{ success: boolean }>('/chat/history');
+    return response.data;
+  }
+
+  // ========== 会话相关 ==========
+
+  async getConversations(params?: {
+    page?: number;
+    page_size?: number;
+  }): Promise<ConversationListResponse> {
+    const response = await this.api.get<ConversationListResponse>('/conversations', { params });
+    return response.data;
+  }
+
+  async createConversation(data?: ConversationCreate): Promise<{ success: boolean; conversation: ConversationResponse }> {
+    const response = await this.api.post<{ success: boolean; conversation: ConversationResponse }>('/conversations', data);
+    return response.data;
+  }
+
+  async getConversation(conversationId: number): Promise<ConversationDetailResponse> {
+    const response = await this.api.get<ConversationDetailResponse>(`/conversations/${conversationId}`);
+    return response.data;
+  }
+
+  async deleteConversation(conversationId: number): Promise<{ success: boolean }> {
+    const response = await this.api.delete<{ success: boolean }>(`/conversations/${conversationId}`);
+    return response.data;
+  }
+
+  async updateConversationTitle(conversationId: number, title: string): Promise<{ success: boolean; conversation: ConversationResponse }> {
+    const response = await this.api.put<{ success: boolean; conversation: ConversationResponse }>(
+      `/conversations/${conversationId}/title`,
+      { title }
+    );
     return response.data;
   }
 

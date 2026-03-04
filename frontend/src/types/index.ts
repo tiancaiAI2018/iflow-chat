@@ -124,6 +124,47 @@ export interface NotificationsResponse {
   unread_count: number;
 }
 
+// 会话相关类型
+export interface Conversation {
+  id: number;
+  user_id: number;
+  title: string;
+  iflow_session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationCreate {
+  title?: string;
+  first_message?: string;
+}
+
+export interface ConversationUpdate {
+  title: string;
+}
+
+export interface ConversationResponse {
+  id: number;
+  user_id: number;
+  title: string;
+  iflow_session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationListResponse {
+  conversations: ConversationResponse[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ConversationDetailResponse {
+  conversation: ConversationResponse;
+  messages: Message[];
+  total_messages: number;
+}
+
 // API 响应通用类型
 export interface ApiResponse<T = unknown> {
   success: boolean;
