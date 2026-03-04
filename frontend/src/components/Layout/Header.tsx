@@ -3,16 +3,20 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useNotifications } from '../../hooks/useNotifications';
 import { NotificationBar } from '../Notification';
+import NewChatButton from '../Chat/NewChatButton';
+import HistoryButton from '../Chat/HistoryButton';
 import './Layout.css';
 
 interface HeaderProps {
   onToggleNotification?: () => void;
   showNotificationPopup?: boolean;
+  onOpenConversationDrawer?: () => void;
 }
 
 const Header: React.FC<HeaderProps> = ({ 
   onToggleNotification, 
-  showNotificationPopup = false 
+  showNotificationPopup = false,
+  onOpenConversationDrawer,
 }) => {
   const { user, logout } = useAuth();
   const { unreadCount, fetchNotifications } = useNotifications();
@@ -76,6 +80,12 @@ const Header: React.FC<HeaderProps> = ({
       <div className="header-logo" onClick={() => handleNavClick('/chat')}>
         <span className="logo-icon">🌊</span>
         <span className="logo-text">iFlow</span>
+      </div>
+
+      {/* 会话按钮区域 - 左侧 */}
+      <div className="header-chat-buttons">
+        <NewChatButton />
+        <HistoryButton onClick={onOpenConversationDrawer} />
       </div>
 
       {/* Desktop Navigation */}

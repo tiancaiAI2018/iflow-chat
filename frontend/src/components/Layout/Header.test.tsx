@@ -12,6 +12,10 @@ jest.mock('../../hooks/useNotifications', () => ({
   useNotifications: jest.fn(),
 }));
 
+jest.mock('../../contexts/ChatContext', () => ({
+  useChatContext: jest.fn(),
+}));
+
 jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
   useLocation: jest.fn(),
@@ -20,6 +24,7 @@ jest.mock('react-router-dom', () => ({
 
 const mockUseAuth = require('../../hooks/useAuth').useAuth;
 const mockUseNotifications = require('../../hooks/useNotifications').useNotifications;
+const mockUseChatContext = require('../../contexts/ChatContext').useChatContext;
 const mockUseLocation = useLocation as jest.MockedFunction<typeof useLocation>;
 const mockUseNavigate = useNavigate as jest.MockedFunction<typeof useNavigate>;
 
@@ -57,6 +62,10 @@ describe('Header Component', () => {
     mockUseNotifications.mockReturnValue({
       unreadCount: 0,
       fetchNotifications: mockFetchNotifications,
+    });
+    mockUseChatContext.mockReturnValue({
+      createNewConversation: jest.fn(),
+      isStreaming: false,
     });
   });
 
@@ -152,6 +161,23 @@ describe('Header Component', () => {
       jest.advanceTimersByTime(60000);
       expect(mockFetchNotifications).toHaveBeenCalledTimes(2);
       jest.useRealTimers();
+    });
+
+    it('renders new chat button', () => {
+      renderWithRouter(<Header />);
+      expect(screen.getByTitle('新建对话')).toBeInTheDocument();
+    });
+
+    it('renders history button', () => {
+      renderWithRouter(<Header />);
+      expect(screen.getByTitle('历史会话')).toBeInTheDocument();
+    });
+
+    it('calls onOpenConversationDrawer when history button is clicked', () => {
+      const mockOpenDrawer = jest.fn();
+      renderWithRouter(<Header onOpenConversationDrawer={mockOpenDrawer} />);
+      fireEvent.click(screen.getByTitle('历史会话'));
+      expect(mockOpenDrawer).toHaveBeenCalled();
     });
   });
 

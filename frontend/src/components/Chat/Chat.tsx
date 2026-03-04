@@ -1,15 +1,23 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useChatContext } from '../../contexts/ChatContext';
-import { apiService } from '../../services/api';
 import Message from './Message';
 import MessageInput from './MessageInput';
+import ConversationDrawer from '../Conversation/ConversationDrawer';
 import './Chat.css';
 
 interface ChatProps {
   onNotification?: (notification: { id: string; content: string; read: boolean; created_at: string }) => void;
+  isConversationDrawerOpen?: boolean;
+  onOpenConversationDrawer?: () => void;
+  onCloseConversationDrawer?: () => void;
 }
 
-const Chat: React.FC<ChatProps> = ({ onNotification }) => {
+const Chat: React.FC<ChatProps> = ({ 
+  onNotification,
+  isConversationDrawerOpen = false,
+  onOpenConversationDrawer,
+  onCloseConversationDrawer,
+}) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
 
@@ -21,7 +29,15 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
     isConnected,
     error,
     sendMessage,
-    clearMessages,
+    // 会话相关状态
+    currentConversation,
+    currentConversationId,
+    conversations,
+    isLoadingConversations,
+    loadConversations,
+    switchConversation,
+    createNewConversation,
+    deleteConversation,
   } = useChatContext();
 
   // 滚动到底部
@@ -39,21 +55,17 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
     setConnectionStatus(isConnected ? 'connected' : 'connecting');
   }, [isConnected]);
 
-  // 处理发送消息
+  // 处理发送消息（Context 内部会自动关联到当前会话，无会话时自动创建）
   const handleSend = (content: string) => {
     sendMessage(content);
   };
 
-  // 处理清空对话
-  const handleClearChat = async () => {
-    if (window.confirm('确定要清空所有对话记录吗？')) {
-      try {
-        await apiService.clearChatHistory();
-        clearMessages();
-      } catch (err) {
-        console.error('Failed to clear chat history:', err);
-      }
+  // 获取空聊天时的显示标题
+  const getEmptyChatTitle = () => {
+    if (currentConversation?.title) {
+      return currentConversation.title;
     }
+    return '新对话';
   };
 
   return (
@@ -72,6 +84,7 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
         {messages.length === 0 && (
           <div className="empty-chat">
             <div className="empty-chat-icon">💬</div>
+            <div className="empty-chat-title">{getEmptyChatTitle()}</div>
             <div className="empty-chat-text">开始和 iFlow 对话吧！</div>
           </div>
         )}
@@ -119,14 +132,13 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
           disabled={!isConnected || isStreaming}
           placeholder={isStreaming ? '正在等待回复...' : '输入消息，按 Enter 发送...'}
         />
-        <button 
-          className="clear-chat-btn" 
-          onClick={handleClearChat}
-          title="清空对话"
-        >
-          🗑️
-        </button>
       </div>
+
+      {/* 会话抽屉 */}
+      <ConversationDrawer 
+        isOpen={isConversationDrawerOpen} 
+        onClose={onCloseConversationDrawer || (() => {})} 
+      />
     </div>
   );
 };

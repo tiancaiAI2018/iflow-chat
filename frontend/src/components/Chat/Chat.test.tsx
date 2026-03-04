@@ -5,7 +5,7 @@ import Chat from './Chat';
 import Message from './Message';
 import MessageInput from './MessageInput';
 import { useAuth } from '../../hooks/useAuth';
-import { useChat } from '../../hooks/useWebSocket';
+import { useChatContext } from '../../contexts/ChatContext';
 
 // Mock scrollIntoView
 beforeAll(() => {
@@ -17,32 +17,39 @@ jest.mock('./Chat.css', () => ({}));
 jest.mock('highlight.js/styles/github-dark.css', () => ({}));
 
 // Mock marked module - return proper HTML
-jest.mock('marked', () => ({
-  marked: {
-    setOptions: jest.fn(),
-    parse: jest.fn((content: string) => {
-      // Simple markdown to HTML conversion for tests
-      let html = content;
-      // Convert headers
-      html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-      html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-      html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-      // Convert bold
-      html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-      // Convert italic
-      html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-      // Convert code blocks
-      html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-      // Convert inline code
-      html = html.replace(/`(.+?)`/g, '<code>$1</code>');
-      // Wrap in paragraph if no block elements
-      if (!html.includes('<h1>') && !html.includes('<pre>') && !html.includes('<p>')) {
-        html = `<p>${html}</p>`;
-      }
-      return html;
-    }),
-  },
-}));
+jest.mock('marked', () => {
+  const mockRenderer = jest.fn().mockImplementation(() => ({}));
+  const mockSetOptions = jest.fn();
+  const mockParse = jest.fn((content: string) => {
+    // Simple markdown to HTML conversion for tests
+    let html = content;
+    // Convert headers
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    // Convert bold
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // Convert italic
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    // Convert code blocks
+    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    // Convert inline code
+    html = html.replace(/`(.+?)`/g, '<code>$1</code>');
+    // Wrap in paragraph if no block elements
+    if (!html.includes('<h1>') && !html.includes('<pre>') && !html.includes('<p>')) {
+      html = `<p>${html}</p>`;
+    }
+    return html;
+  });
+
+  return {
+    marked: {
+      Renderer: mockRenderer,
+      setOptions: mockSetOptions,
+      parse: mockParse,
+    },
+  };
+});
 
 // Mock highlight.js
 jest.mock('highlight.js', () => ({
@@ -58,7 +65,7 @@ jest.mock('highlight.js', () => ({
 
 // Mock hooks
 jest.mock('../../hooks/useAuth');
-jest.mock('../../hooks/useWebSocket');
+jest.mock('../../contexts/ChatContext');
 jest.mock('../../services/api', () => ({
   apiService: {
     getWebSocketUrl: jest.fn(() => 'ws://localhost:8000/ws/1?token=test'),
@@ -68,12 +75,32 @@ jest.mock('../../services/api', () => ({
 }));
 
 const mockUseAuth = useAuth as jest.MockedFunction<typeof useAuth>;
-const mockUseChat = useChat as jest.MockedFunction<typeof useChat>;
+const mockUseChatContext = useChatContext as jest.MockedFunction<typeof useChatContext>;
 
 // Wrapper component for tests
 const TestWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <BrowserRouter>{children}</BrowserRouter>
 );
+
+// Default mock return value for useChatContext
+const defaultChatContextValue = {
+  messages: [],
+  isStreaming: false,
+  isWaiting: false,
+  isConnected: true,
+  error: null,
+  sendMessage: jest.fn(),
+  clearMessages: jest.fn(),
+  // 会话相关
+  conversations: [],
+  currentConversationId: null,
+  currentConversation: null,
+  isLoadingConversations: false,
+  loadConversations: jest.fn(),
+  switchConversation: jest.fn(),
+  createNewConversation: jest.fn(),
+  deleteConversation: jest.fn(),
+};
 
 describe('Chat Component', () => {
   beforeEach(() => {
@@ -87,15 +114,7 @@ describe('Chat Component', () => {
       checkAuth: jest.fn(),
     });
 
-    mockUseChat.mockReturnValue({
-      messages: [],
-      isStreaming: false,
-      isWaiting: false,
-      isConnected: true,
-      error: null,
-      sendMessage: jest.fn(),
-      clearMessages: jest.fn(),
-    });
+    mockUseChatContext.mockReturnValue(defaultChatContextValue);
   });
 
   afterEach(() => {
@@ -114,14 +133,9 @@ describe('Chat Component', () => {
   });
 
   test('shows disconnected status when not connected', async () => {
-    mockUseChat.mockReturnValue({
-      messages: [],
-      isStreaming: false,
-      isWaiting: false,
+    mockUseChatContext.mockReturnValue({
+      ...defaultChatContextValue,
       isConnected: false,
-      error: null,
-      sendMessage: jest.fn(),
-      clearMessages: jest.fn(),
     });
 
     await act(async () => {
@@ -135,14 +149,9 @@ describe('Chat Component', () => {
   });
 
   test('disables input when not connected', async () => {
-    mockUseChat.mockReturnValue({
-      messages: [],
-      isStreaming: false,
-      isWaiting: false,
+    mockUseChatContext.mockReturnValue({
+      ...defaultChatContextValue,
       isConnected: false,
-      error: null,
-      sendMessage: jest.fn(),
-      clearMessages: jest.fn(),
     });
 
     await act(async () => {
@@ -168,6 +177,178 @@ describe('Chat Component', () => {
       await new Promise(resolve => setTimeout(resolve, 100));
     });
     expect(screen.getByText('开始和 iFlow 对话吧！')).toBeInTheDocument();
+  });
+
+  test('shows conversation title when available', async () => {
+    mockUseChatContext.mockReturnValue({
+      ...defaultChatContextValue,
+      currentConversationId: 1,
+      currentConversation: {
+        id: 1,
+        user_id: 1,
+        title: 'Test Conversation',
+        iflow_session_id: 'session-123',
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+      },
+      conversations: [{
+        id: 1,
+        user_id: 1,
+        title: 'Test Conversation',
+        iflow_session_id: 'session-123',
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+      }],
+    });
+
+    await act(async () => {
+      render(
+        <TestWrapper>
+          <Chat />
+        </TestWrapper>
+      );
+    });
+    // Use more specific selector to find the empty-chat-title element
+    const emptyChatTitle = document.querySelector('.empty-chat-title');
+    expect(emptyChatTitle).toHaveTextContent('Test Conversation');
+  });
+
+  test('shows "新对话" title when no conversation', async () => {
+    await act(async () => {
+      render(
+        <TestWrapper>
+          <Chat />
+        </TestWrapper>
+      );
+    });
+    // Use more specific selector to find the empty-chat-title element
+    const emptyChatTitle = document.querySelector('.empty-chat-title');
+    expect(emptyChatTitle).toHaveTextContent('新对话');
+  });
+
+  test('calls sendMessage when sending a message', async () => {
+    const mockSendMessage = jest.fn();
+    mockUseChatContext.mockReturnValue({
+      ...defaultChatContextValue,
+      sendMessage: mockSendMessage,
+    });
+
+    await act(async () => {
+      render(
+        <TestWrapper>
+          <Chat />
+        </TestWrapper>
+      );
+    });
+
+    const input = screen.getByPlaceholderText('输入消息，按 Enter 发送...');
+    fireEvent.change(input, { target: { value: 'Test message' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(mockSendMessage).toHaveBeenCalledWith('Test message');
+  });
+
+  test('disables input when streaming', async () => {
+    mockUseChatContext.mockReturnValue({
+      ...defaultChatContextValue,
+      isStreaming: true,
+    });
+
+    await act(async () => {
+      render(
+        <TestWrapper>
+          <Chat />
+        </TestWrapper>
+      );
+    });
+    expect(screen.getByPlaceholderText('正在等待回复...')).toBeDisabled();
+  });
+
+  test('shows waiting indicator when waiting for response', async () => {
+    mockUseChatContext.mockReturnValue({
+      ...defaultChatContextValue,
+      isWaiting: true,
+    });
+
+    await act(async () => {
+      render(
+        <TestWrapper>
+          <Chat />
+        </TestWrapper>
+      );
+    });
+    // Waiting indicator is shown via Message component with isWaiting prop
+    const waitingDots = document.querySelector('.waiting-dots');
+    expect(waitingDots).toBeInTheDocument();
+  });
+
+  test('displays messages from context', async () => {
+    mockUseChatContext.mockReturnValue({
+      ...defaultChatContextValue,
+      messages: [
+        { id: 'msg-1', role: 'user', content: 'Hello', created_at: '2024-01-01T00:00:00Z' },
+        { id: 'msg-2', role: 'assistant', content: 'Hi there!', created_at: '2024-01-01T00:00:00Z' },
+      ],
+    });
+
+    const { container } = await act(async () => {
+      return render(
+        <TestWrapper>
+          <Chat />
+        </TestWrapper>
+      );
+    });
+    // Check for message elements
+    const userMessage = container.querySelector('.message-user');
+    const assistantMessage = container.querySelector('.message-assistant');
+    expect(userMessage).toBeInTheDocument();
+    expect(assistantMessage).toBeInTheDocument();
+  });
+
+  test('shows error message when error occurs', async () => {
+    mockUseChatContext.mockReturnValue({
+      ...defaultChatContextValue,
+      error: 'Connection error',
+    });
+
+    await act(async () => {
+      render(
+        <TestWrapper>
+          <Chat />
+        </TestWrapper>
+      );
+    });
+    expect(screen.getByText('Connection error')).toBeInTheDocument();
+  });
+
+  test('renders conversation drawer when props provided', async () => {
+    await act(async () => {
+      render(
+        <TestWrapper>
+          <Chat 
+            isConversationDrawerOpen={true}
+            onOpenConversationDrawer={jest.fn()}
+            onCloseConversationDrawer={jest.fn()}
+          />
+        </TestWrapper>
+      );
+    });
+    // ConversationDrawer should be rendered
+    const drawer = document.querySelector('.conversation-drawer.open');
+    expect(drawer).toBeInTheDocument();
+  });
+
+  test('renders conversation drawer closed by default', async () => {
+    await act(async () => {
+      render(
+        <TestWrapper>
+          <Chat />
+        </TestWrapper>
+      );
+    });
+    // ConversationDrawer should not be open
+    const drawer = document.querySelector('.conversation-drawer.open');
+    expect(drawer).not.toBeInTheDocument();
   });
 });
 

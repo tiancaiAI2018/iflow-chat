@@ -38,6 +38,7 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
   const [showNotificationPopup, setShowNotificationPopup] = useState(false);
+  const [isConversationDrawerOpen, setIsConversationDrawerOpen] = useState(false);
   const { addNotification, unreadCount } = useNotifications();
 
   // 在通知页面时隐藏弹窗
@@ -51,16 +52,32 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     setShowNotificationPopup((prev) => !prev);
   };
 
-  // 克隆子元素并传递 onNotification 回调
+  const openConversationDrawer = () => {
+    setIsConversationDrawerOpen(true);
+  };
+
+  const closeConversationDrawer = () => {
+    setIsConversationDrawerOpen(false);
+  };
+
+  // 克隆子元素并传递 onNotification 和会话抽屉 props
   const childrenWithProps = React.Children.map(children, (child) => {
     if (React.isValidElement(child)) {
-      return React.cloneElement(child as React.ReactElement<{ onNotification?: (notification: { id: string; content: string; read: boolean; created_at: string; task_id?: string | null | undefined }) => void }>, {
+      return React.cloneElement(child as React.ReactElement<{ 
+        onNotification?: (notification: { id: string; content: string; read: boolean; created_at: string; task_id?: string | null | undefined }) => void;
+        isConversationDrawerOpen?: boolean;
+        onOpenConversationDrawer?: () => void;
+        onCloseConversationDrawer?: () => void;
+      }>, {
         onNotification: (notification: { id: string; content: string; read: boolean; created_at: string; task_id?: string | null | undefined }) => {
           addNotification({
             ...notification,
             task_id: notification.task_id ?? null,
           });
         },
+        isConversationDrawerOpen,
+        onOpenConversationDrawer: openConversationDrawer,
+        onCloseConversationDrawer: closeConversationDrawer,
       });
     }
     return child;
@@ -71,6 +88,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       <Header 
         onToggleNotification={toggleNotificationPopup}
         showNotificationPopup={showNotificationPopup}
+        onOpenConversationDrawer={openConversationDrawer}
       />
       <main className="app-main">
         {childrenWithProps}

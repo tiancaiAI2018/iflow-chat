@@ -115,22 +115,22 @@ class ApiService {
     page?: number;
     page_size?: number;
   }): Promise<ConversationListResponse> {
-    const response = await this.api.get<ConversationListResponse>('/conversations', { params });
+    const response = await this.api.get<ConversationListResponse>('/conversations/', { params });
     return response.data;
   }
 
   async createConversation(data?: ConversationCreate): Promise<{ success: boolean; conversation: ConversationResponse }> {
-    const response = await this.api.post<{ success: boolean; conversation: ConversationResponse }>('/conversations', data);
+    const response = await this.api.post<{ success: boolean; conversation: ConversationResponse }>('/conversations/', data);
     return response.data;
   }
 
   async getConversation(conversationId: number): Promise<ConversationDetailResponse> {
-    const response = await this.api.get<ConversationDetailResponse>(`/conversations/${conversationId}`);
+    const response = await this.api.get<ConversationDetailResponse>(`/conversations/${conversationId}/`);
     return response.data;
   }
 
   async deleteConversation(conversationId: number): Promise<{ success: boolean }> {
-    const response = await this.api.delete<{ success: boolean }>(`/conversations/${conversationId}`);
+    const response = await this.api.delete<{ success: boolean }>(`/conversations/${conversationId}/`);
     return response.data;
   }
 

@@ -46,6 +46,14 @@
   letter-spacing: -0.5px;
 }
 
+/* 会话按钮区域 */
+.header-chat-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 16px;
+}
+
 /* Desktop Navigation */
 .header-nav {
   display: flex;
