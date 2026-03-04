@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useRef, ReactNode, useEffect } from 'react';
-import type { WSMessage, ToolCall, Notification } from '../types';
+import type { WSMessage, ToolCall, Notification, Conversation, ConversationResponse, Message } from '../types';
 import { apiService } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 
@@ -22,6 +22,15 @@ interface ChatContextValue {
   error: string | null;
   sendMessage: (content: string) => void;
   clearMessages: () => void;
+  // 会话相关
+  conversations: ConversationResponse[];
+  currentConversationId: number | null;
+  currentConversation: ConversationResponse | null;
+  isLoadingConversations: boolean;
+  loadConversations: () => Promise<void>;
+  switchConversation: (conversationId: number) => Promise<void>;
+  createNewConversation: (firstMessage?: string) => Promise<ConversationResponse | null>;
+  deleteConversation: (conversationId: number) => Promise<boolean>;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -39,6 +48,11 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentAssistantMessage, setCurrentAssistantMessage] = useState<string>('');
+  
+  // 会话相关状态
+  const [conversations, setConversations] = useState<ConversationResponse[]>([]);
+  const [currentConversationId, setCurrentConversationId] = useState<number | null>(null);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
 
   // 使用 ref 追踪 WebSocket 和流式内容
   const wsRef = useRef<WebSocket | null>(null);
@@ -46,6 +60,126 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectCountRef = useRef(0);
   const mountedRef = useRef(true);
+
+  // 当前会话对象
+  const currentConversation = conversations.find(c => c.id === currentConversationId) || null;
+
+  // 加载会话列表
+  const loadConversations = useCallback(async () => {
+    if (!user) return;
+    
+    setIsLoadingConversations(true);
+    try {
+      const response = await apiService.getConversations({ page: 1, page_size: 50 });
+      setConversations(response.conversations);
+    } catch (err) {
+      console.error('Failed to load conversations:', err);
+    } finally {
+      setIsLoadingConversations(false);
+    }
+  }, [user]);
+
+  // 切换会话
+  const switchConversation = useCallback(async (conversationId: number) => {
+    if (currentConversationId === conversationId) return;
+    
+    try {
+      // 清空当前消息
+      setMessages([]);
+      setCurrentAssistantMessage('');
+      streamingContentRef.current = '';
+      
+      // 获取会话详情和历史消息
+      const response = await apiService.getConversation(conversationId);
+      
+      // 设置当前会话ID
+      setCurrentConversationId(conversationId);
+      
+      // 加载历史消息
+      const historyMessages: ChatMessage[] = response.messages.map((msg: Message) => ({
+        id: `msg-${msg.id}`,
+        role: msg.role,
+        content: msg.content,
+        created_at: msg.created_at,
+      }));
+      setMessages(historyMessages);
+      
+      // 发送切换会话消息到 WebSocket
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'switch_conversation',
+          conversation_id: conversationId,
+        }));
+      }
+      
+      setError(null);
+    } catch (err) {
+      console.error('Failed to switch conversation:', err);
+      setError('切换会话失败');
+    }
+  }, [currentConversationId]);
+
+  // 创建新会话
+  const createNewConversation = useCallback(async (firstMessage?: string): Promise<ConversationResponse | null> => {
+    if (!user) return null;
+    
+    try {
+      const response = await apiService.createConversation(
+        firstMessage ? { first_message: firstMessage } : undefined
+      );
+      
+      const newConversation = response.conversation;
+      
+      // 添加到会话列表开头
+      setConversations(prev => [newConversation, ...prev]);
+      
+      // 切换到新会话
+      setCurrentConversationId(newConversation.id);
+      
+      // 清空消息
+      setMessages([]);
+      setCurrentAssistantMessage('');
+      streamingContentRef.current = '';
+      
+      // 发送切换会话消息到 WebSocket
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'switch_conversation',
+          conversation_id: newConversation.id,
+        }));
+      }
+      
+      return newConversation;
+    } catch (err) {
+      console.error('Failed to create conversation:', err);
+      setError('创建会话失败');
+      return null;
+    }
+  }, [user]);
+
+  // 删除会话
+  const deleteConversation = useCallback(async (conversationId: number): Promise<boolean> => {
+    try {
+      await apiService.deleteConversation(conversationId);
+      
+      // 从列表中移除
+      setConversations(prev => prev.filter(c => c.id !== conversationId));
+      
+      // 如果删除的是当前会话，切换到第一个可用会话或清空
+      if (currentConversationId === conversationId) {
+        setMessages([]);
+        setCurrentConversationId(null);
+        setCurrentAssistantMessage('');
+        streamingContentRef.current = '';
+      }
+      
+      return true;
+    } catch (err) {
+      console.error('Failed to delete conversation:', err);
+      setError('删除会话失败');
+      return false;
+    }
+  }, [currentConversationId]);
 
   // 处理 WebSocket 消息
   const handleWSMessage = useCallback((event: MessageEvent) => {
@@ -99,6 +233,9 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
                 return msg;
               })
             );
+
+            // 刷新会话列表以更新标题和时间
+            loadConversations();
           }
           break;
 
@@ -157,7 +294,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     } catch (e) {
       console.error('Failed to parse WebSocket message:', e);
     }
-  }, [onNotification]);
+  }, [onNotification, loadConversations]);
 
   // 连接 WebSocket
   const connect = useCallback(() => {
@@ -176,6 +313,14 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       setError(null);
       reconnectCountRef.current = 0;
       console.log('WebSocket connected');
+      
+      // 如果有当前会话，发送切换消息
+      if (currentConversationId) {
+        ws.send(JSON.stringify({
+          type: 'switch_conversation',
+          conversation_id: currentConversationId,
+        }));
+      }
     };
 
     ws.onmessage = handleWSMessage;
@@ -203,12 +348,16 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
         setError('连接已断开，请刷新页面重试');
       }
     };
-  }, [user, handleWSMessage]);
+  }, [user, handleWSMessage, currentConversationId]);
 
-  // 初始化连接
+  // 初始化连接和加载会话
   useEffect(() => {
     mountedRef.current = true;
-    connect();
+    
+    if (user) {
+      connect();
+      loadConversations();
+    }
 
     return () => {
       mountedRef.current = false;
@@ -220,10 +369,10 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
         wsRef.current = null;
       }
     };
-  }, [connect]);
+  }, [user, connect, loadConversations]);
 
   // 发送消息
-  const sendMessage = useCallback((content: string) => {
+  const sendMessage = useCallback(async (content: string) => {
     if (!content.trim()) return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       setError('WebSocket 未连接');
@@ -232,6 +381,17 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
 
     streamingContentRef.current = '';
     setCurrentAssistantMessage('');
+
+    // 如果没有当前会话，先创建一个新会话
+    let conversationIdToSend = currentConversationId;
+    if (!conversationIdToSend) {
+      const newConv = await createNewConversation(content);
+      if (!newConv) {
+        setError('创建会话失败');
+        return;
+      }
+      conversationIdToSend = newConv.id;
+    }
 
     // 添加用户消息到列表
     const userMessage: ChatMessage = {
@@ -246,13 +406,14 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     wsRef.current.send(JSON.stringify({
       type: 'chat',
       content,
+      conversation_id: conversationIdToSend,
     }));
 
     setIsWaiting(true);
     setIsStreaming(true);
-  }, []);
+  }, [currentConversationId, createNewConversation]);
 
-  // 清空消息
+  // 清空消息（保留用于清空当前显示）
   const clearMessages = useCallback(() => {
     setMessages([]);
     setCurrentAssistantMessage('');
@@ -279,6 +440,15 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     error,
     sendMessage,
     clearMessages,
+    // 会话相关
+    conversations,
+    currentConversationId,
+    currentConversation,
+    isLoadingConversations,
+    loadConversations,
+    switchConversation,
+    createNewConversation,
+    deleteConversation,
   };
 
   return (
