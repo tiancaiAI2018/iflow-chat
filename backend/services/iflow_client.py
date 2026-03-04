@@ -42,6 +42,7 @@ class ChatMessage:
     is_finished: bool = False   # 是否完成
     
     # 工具调用相关
+    tool_id: Optional[str] = None  # 工具调用 ID
     tool_name: Optional[str] = None
     tool_arguments: Optional[Dict[str, Any]] = None
     tool_status: Optional[str] = None  # pending, in_progress, completed, failed
@@ -365,29 +366,39 @@ class IFlowClientService:
         status_map = {
             ToolCallStatus.PENDING: "pending",
             ToolCallStatus.IN_PROGRESS: "in_progress",
-            ToolCallStatus.RUNNING: "running",
+            ToolCallStatus.RUNNING: "in_progress",  # RUNNING 是 IN_PROGRESS 的别名
             ToolCallStatus.COMPLETED: "completed",
             ToolCallStatus.FAILED: "failed",
         }
         
-        # 获取工具参数（可能是 args 或 arguments）
-        tool_args = getattr(msg, 'args', None) or getattr(msg, 'arguments', None) or {}
+        # 获取工具参数（SDK 使用 args 字段）
+        tool_args = getattr(msg, 'args', None) or {}
         
-        # 获取结果和错误（需要从 content 中提取）
+        # 获取结果（从 content.markdown 字段提取）
         tool_result = None
         tool_error = None
         if hasattr(msg, 'content') and msg.content:
             content = msg.content
-            if hasattr(content, 'result'):
-                tool_result = content.result
+            # ToolCallContent 有 markdown 字段存储结果
+            if hasattr(content, 'markdown') and content.markdown:
+                tool_result = content.markdown
+            # 检查是否有其他类型的错误信息
             if hasattr(content, 'error'):
                 tool_error = content.error
         
+        # 获取工具名称和 ID
+        tool_name = msg.tool_name or msg.label or "unknown"
+        tool_id = msg.id or f"{tool_name}-{hash(str(tool_args))}"
+        
+        # 日志记录，便于调试
+        logger.debug(f"ToolCall: id={tool_id}, name={tool_name}, status={msg.status}, args={list(tool_args.keys()) if tool_args else []}, result_len={len(tool_result) if tool_result else 0}")
+        
         return ChatMessage(
             type=MessageType.TOOL_CALL,
-            tool_name=msg.tool_name or msg.label,
+            tool_id=tool_id,
+            tool_name=tool_name,
             tool_arguments=tool_args,
-            tool_status=status_map.get(msg.status, "unknown"),
+            tool_status=status_map.get(msg.status, "in_progress"),
             tool_result=tool_result,
             tool_error=tool_error,
         )

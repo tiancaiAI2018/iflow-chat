@@ -58,6 +58,7 @@ export interface ChatHistoryResponse {
 
 // 工具调用类型
 export interface ToolCall {
+  tool_id?: string;
   tool_name: string;
   arguments: Record<string, unknown>;
   status: 'pending' | 'in_progress' | 'completed' | 'failed';
@@ -79,6 +80,7 @@ export interface WSMessage {
   content?: string;
   is_delta?: boolean;
   is_finished?: boolean;
+  tool_id?: string;
   tool_name?: string;
   arguments?: Record<string, unknown>;
   status?: ToolCall['status'];

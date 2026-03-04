@@ -172,10 +172,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 // 用于管理对话状态的 hook
 interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'tool_call';
   content: string;
   isStreaming?: boolean;
   toolCalls?: ToolCall[];
+  toolCall?: ToolCall;  // 单个工具调用（用于独立的工具调用消息）
   created_at: string;
 }
 
@@ -200,11 +201,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentAssistantMessage, setCurrentAssistantMessage] = useState<string>('');
-  const [currentToolCalls, setCurrentToolCalls] = useState<ToolCall[]>([]);
 
   // 使用 ref 追踪累积的流式内容，避免闭包问题
   const streamingContentRef = useRef<string>('');
-  const streamingToolCallsRef = useRef<ToolCall[]>([]);
+  // 用于追踪工具调用，支持按名称更新状态
+  const toolCallIndexRef = useRef<Map<string, number>>(new Map());
 
   // 处理 WebSocket 消息
   const handleWSMessage = useCallback((message: WSMessage) => {
@@ -231,7 +232,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         if (message.is_finished) {
           // 使用 ref 中的累积内容
           const finalContent = streamingContentRef.current;
-          const finalToolCalls = [...streamingToolCallsRef.current];
           
           if (finalContent) {
             setMessages((prev) => [
@@ -240,39 +240,75 @@ export function useChat(options: UseChatOptions): UseChatReturn {
                 id: `msg-${Date.now()}`,
                 role: 'assistant',
                 content: finalContent,
-                toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
                 created_at: new Date().toISOString(),
               },
             ]);
           }
           // 清空 ref 和 state
           streamingContentRef.current = '';
-          streamingToolCallsRef.current = [];
           setCurrentAssistantMessage('');
-          setCurrentToolCalls([]);
           setIsStreaming(false);
+          
+          // 将所有工具调用标记为已完成
+          setMessages((prev) => 
+            prev.map((msg) => {
+              if (msg.role === 'tool_call' && msg.toolCall && msg.toolCall.status !== 'completed') {
+                return {
+                  ...msg,
+                  toolCall: { ...msg.toolCall, status: 'completed' as const },
+                };
+              }
+              return msg;
+            })
+          );
+          
+          // 清空工具调用索引
+          toolCallIndexRef.current.clear();
         }
         break;
 
       case 'tool_call':
-        // 工具调用消息
+        // 工具调用消息 - 作为独立消息立即添加到列表
         const newToolCall: ToolCall = {
+          tool_id: message.tool_id,
           tool_name: message.tool_name || 'unknown',
           arguments: message.arguments || {},
-          status: message.status || 'pending',
+          status: message.status || 'in_progress',
           result: message.result,
         };
         
-        // 使用 ref 追踪工具调用
-        const existingIndex = streamingToolCallsRef.current.findIndex(
-          (tc) => tc.tool_name === newToolCall.tool_name
-        );
-        if (existingIndex >= 0) {
-          streamingToolCallsRef.current[existingIndex] = newToolCall;
+        // 使用 tool_id 作为唯一标识符，如果没有则使用 tool_name
+        const toolKey = message.tool_id || message.tool_name || 'unknown';
+        const existingIndex = toolCallIndexRef.current.get(toolKey);
+        
+        if (existingIndex !== undefined) {
+          // 更新已存在的工具调用
+          setMessages((prev) => {
+            const updated = [...prev];
+            if (updated[existingIndex] && updated[existingIndex].toolCall) {
+              updated[existingIndex] = {
+                ...updated[existingIndex],
+                toolCall: newToolCall,
+              };
+            }
+            return updated;
+          });
         } else {
-          streamingToolCallsRef.current.push(newToolCall);
+          // 添加新的工具调用消息
+          const newIndex = messages.length + (streamingContentRef.current ? 1 : 0);
+          toolCallIndexRef.current.set(toolKey, newIndex);
+          
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `tool-${Date.now()}-${toolKey}`,
+              role: 'tool_call',
+              content: '',
+              toolCall: newToolCall,
+              created_at: new Date().toISOString(),
+            },
+          ]);
         }
-        setCurrentToolCalls([...streamingToolCallsRef.current]);
         break;
 
       case 'notification':
@@ -288,7 +324,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       default:
         break;
     }
-  }, [currentAssistantMessage, currentToolCalls, onNotification]);
+  }, [onNotification]);
 
   const {
     isConnected,
@@ -302,6 +338,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   // 发送消息
   const sendMessage = useCallback((content: string) => {
     if (!content.trim()) return;
+
+    // 清空之前的流式状态
+    streamingContentRef.current = '';
+    setCurrentAssistantMessage('');
+    toolCallIndexRef.current.clear();
 
     // 添加用户消息到列表
     const userMessage: ChatMessage = {
@@ -325,18 +366,18 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   const clearMessages = useCallback(() => {
     setMessages([]);
     setCurrentAssistantMessage('');
-    setCurrentToolCalls([]);
+    streamingContentRef.current = '';
+    toolCallIndexRef.current.clear();
   }, []);
 
   // 合并当前正在流式输出的消息
   const allMessages = [...messages];
-  if (currentAssistantMessage || currentToolCalls.length > 0) {
+  if (currentAssistantMessage) {
     allMessages.push({
       id: 'streaming',
       role: 'assistant',
       content: currentAssistantMessage,
       isStreaming: true,
-      toolCalls: currentToolCalls,
       created_at: new Date().toISOString(),
     });
   }

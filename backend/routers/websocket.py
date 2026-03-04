@@ -5,7 +5,7 @@ WebSocket 路由
 import asyncio
 import logging
 import json
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends
@@ -97,10 +97,11 @@ class AssistantMessageResponse(WSResponse):
 class ToolCallResponse(WSResponse):
     """工具调用响应"""
     type: str = "tool_call"
+    tool_id: Optional[str] = None  # 工具调用 ID，用于前端更新状态
     tool_name: str
     arguments: dict = {}
     status: str  # pending, in_progress, completed, failed
-    result: Optional[dict] = None
+    result: Optional[Any] = None  # 可以是 dict、str 或其他类型
     error: Optional[str] = None
 
 
@@ -421,9 +422,10 @@ async def handle_chat_message(
                 # 工具调用
                 await websocket.send_json(
                     ToolCallResponse(
+                        tool_id=msg.tool_id,
                         tool_name=msg.tool_name or "",
                         arguments=msg.tool_arguments or {},
-                        status=msg.tool_status or "pending",
+                        status=msg.tool_status or "in_progress",
                         result=msg.tool_result,
                         error=msg.tool_error,
                     ).model_dump()

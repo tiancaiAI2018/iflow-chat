@@ -70,3 +70,104 @@ tool_args = getattr(msg, 'args', None) or getattr(msg, 'arguments', None) or {}
 1. 查看后端日志中的具体错误信息
 2. 检查 iflow-sdk 源码中的 ToolCallMessage 类定义
 3. 使用 `grep -A 20 "class ToolCallMessage"` 查看属性列表
+
+---
+
+# Bug: 工具调用显示顺序错误和状态不更新
+
+## 问题
+1. 工具调用显示在 AI 回复的最后，而不是按实际调用顺序显示
+2. 工具状态一直显示"等待中"，不会更新为"成功"或"失败"
+3. Chat.tsx 没有传递 toolCall 属性给 Message 组件
+
+## 原因
+
+### 顺序问题
+原设计将工具调用存储在 ref 中，等到消息结束时才添加到消息列表。
+
+### 状态问题
+iFlow SDK 只发送一次工具调用消息（状态是 `pending`），不发送后续状态更新。
+
+### 前端问题
+Chat.tsx 没有传递 `toolCall` 属性给 Message 组件，导致工具调用消息无法渲染。
+
+## 修复
+
+### 前端 - 工具调用作为独立消息
+```typescript
+// useWebSocket.ts - 工具调用立即作为独立消息添加
+case 'tool_call':
+  const newToolCall: ToolCall = {
+    tool_id: message.tool_id,
+    tool_name: message.tool_name || 'unknown',
+    arguments: message.arguments || {},
+    status: message.status || 'in_progress',
+    result: message.result,
+  };
+  
+  // 添加新的工具调用消息
+  setMessages((prev) => [
+    ...prev,
+    {
+      id: `tool-${Date.now()}-${toolKey}`,
+      role: 'tool_call',
+      content: '',
+      toolCall: newToolCall,
+      created_at: new Date().toISOString(),
+    },
+  ]);
+```
+
+### 前端 - 消息结束时更新工具状态
+```typescript
+// useWebSocket.ts - 消息结束时将所有工具调用标记为已完成
+if (message.is_finished) {
+  setMessages((prev) => 
+    prev.map((msg) => {
+      if (msg.role === 'tool_call' && msg.toolCall && msg.toolCall.status !== 'completed') {
+        return {
+          ...msg,
+          toolCall: { ...msg.toolCall, status: 'completed' },
+        };
+      }
+      return msg;
+    })
+  );
+}
+```
+
+### 前端 - Chat.tsx 传递 toolCall 属性
+```tsx
+// Chat.tsx
+<Message
+  key={msg.id}
+  id={msg.id}
+  role={msg.role}
+  content={msg.content}
+  isStreaming={msg.isStreaming}
+  toolCalls={msg.toolCalls}
+  toolCall={msg.toolCall}  // 添加此行
+  created_at={msg.created_at}
+/>
+```
+
+### 后端 - 添加 tool_id 字段
+```python
+# iflow_client.py - 添加 tool_id 字段
+tool_id = msg.id or f"{tool_name}-{hash(str(tool_args))}"
+
+return ChatMessage(
+    type=MessageType.TOOL_CALL,
+    tool_id=tool_id,
+    tool_name=tool_name,
+    tool_arguments=tool_args,
+    tool_status=status_map.get(msg.status, "in_progress"),
+    tool_result=tool_result,
+)
+```
+
+## 排查方法
+1. 使用浏览器 Playwright 测试工具调用流程
+2. 检查 WebSocket 消息顺序
+3. 检查 React 组件 props 是否正确传递
+4. 检查 iFlow SDK 消息结构（ToolCallMessage 属性）

@@ -117,6 +117,7 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
             content={msg.content}
             isStreaming={msg.isStreaming}
             toolCalls={msg.toolCalls}
+            toolCall={msg.toolCall}
             created_at={msg.created_at}
           />
         ))}
