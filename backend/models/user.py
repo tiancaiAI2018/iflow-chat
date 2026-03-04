@@ -29,9 +29,33 @@ class User(Base):
     chat_histories: Mapped[List["ChatHistory"]] = relationship(
         "ChatHistory", back_populates="user", cascade="all, delete-orphan"
     )
+    conversations: Mapped[List["Conversation"]] = relationship(
+        "Conversation", back_populates="user", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, username='{self.username}', email='{self.email}')>"
+
+
+class Conversation(Base):
+    """会话表"""
+    __tablename__ = "conversations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="新会话")
+    iflow_session_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
+
+    # 关系
+    user: Mapped["User"] = relationship("User", back_populates="conversations")
+    messages: Mapped[List["ChatHistory"]] = relationship(
+        "ChatHistory", back_populates="conversation", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<Conversation(id={self.id}, user_id={self.user_id}, title='{self.title}')>"
 
 
 class VerificationCode(Base):
@@ -63,12 +87,18 @@ class ChatHistory(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    conversation_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("conversations.id"), nullable=True, index=True
+    )
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # 'user' | 'assistant'
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
     # 关系
     user: Mapped["User"] = relationship("User", back_populates="chat_histories")
+    conversation: Mapped[Optional["Conversation"]] = relationship(
+        "Conversation", back_populates="messages"
+    )
 
     def __repr__(self) -> str:
-        return f"<ChatHistory(id={self.id}, user_id={self.user_id}, role='{self.role}')>"
+        return f"<ChatHistory(id={self.id}, user_id={self.user_id}, conversation_id={self.conversation_id}, role='{self.role}')>"

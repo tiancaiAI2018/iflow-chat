@@ -183,3 +183,71 @@ class NotificationDeleteResponse(BaseModel):
     """删除通知响应模型"""
     success: bool = True
     message: str
+
+
+# ==================== 会话相关 ====================
+
+class ConversationCreate(BaseModel):
+    """创建会话请求模型"""
+    title: Optional[str] = Field(None, max_length=255, description="会话标题（可选，默认'新会话'）")
+    first_message: Optional[str] = Field(None, max_length=2000, description="首条消息（用于 AI 生成标题）")
+
+
+class ConversationResponse(BaseModel):
+    """会话响应模型"""
+    id: int
+    user_id: int
+    title: str
+    iflow_session_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConversationListResponse(BaseModel):
+    """会话列表响应模型"""
+    success: bool = True
+    conversations: list[ConversationResponse]
+    total: int = 0
+
+
+class ConversationDetailResponse(BaseModel):
+    """会话详情响应模型（包含消息历史）"""
+    success: bool = True
+    conversation: ConversationResponse
+    messages: list["ChatMessageResponse"]
+
+
+class ChatMessageResponse(BaseModel):
+    """聊天消息响应模型"""
+    id: int
+    role: str
+    content: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConversationTitleUpdate(BaseModel):
+    """更新会话标题请求模型"""
+    title: str = Field(..., min_length=1, max_length=255, description="新标题")
+
+
+class ConversationUpdateResponse(BaseModel):
+    """更新会话标题响应模型"""
+    success: bool = True
+    conversation: ConversationResponse
+    message: str = "标题更新成功"
+
+
+class ConversationDeleteResponse(BaseModel):
+    """删除会话响应模型"""
+    success: bool = True
+    message: str = "会话删除成功"
+
+
+# 更新 forward reference
+ConversationDetailResponse.model_rebuild()
