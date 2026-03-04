@@ -1,9 +1,12 @@
 """
 iFlow SDK 封装服务
 提供流式对话处理、工具调用消息解析、连接管理、错误恢复等功能
+支持系统提示词注入，用于定时任务意图识别
 """
 import asyncio
 import logging
+import json
+import re
 from typing import AsyncGenerator, Optional, Callable, Any, Dict
 from dataclasses import dataclass
 from enum import Enum
@@ -24,6 +27,55 @@ from iflow_sdk.types import ToolResultMessage
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== 系统提示词 ====================
+
+# 定时任务意图识别系统提示词
+SCHEDULE_TASK_SYSTEM_PROMPT = """
+你是一个智能助手，具有创建定时任务的能力。
+
+当用户表达想要创建定时任务/提醒/周期性任务时，请识别并返回特定格式的 JSON。
+
+【识别关键词】
+- "提醒我..."、"定时..."、"每天..."、"每周..."、"每月..."
+- "每隔...分钟/小时..."、"周期性..."
+- "到时间..."、"到时候..."
+
+【返回格式】
+如果用户意图是创建定时任务，请在响应的最后返回以下 JSON 格式：
+```json
+{"action": "create_task", "description": "用户的原始描述"}
+```
+
+【示例】
+用户: "每天早上9点提醒我查看股票"
+助手: 好的，我来帮你创建一个每天早上9点的提醒任务。
+```json
+{"action": "create_task", "description": "每天早上9点提醒我查看股票"}
+```
+
+用户: "每周一上午10点发送周报"
+助手: 已为你创建每周一上午10点的定时任务。
+```json
+{"action": "create_task", "description": "每周一上午10点发送周报"}
+```
+
+用户: "每隔30分钟检查一次服务器状态"
+助手: 好的，我将创建一个每隔30分钟的定时任务。
+```json
+{"action": "create_task", "description": "每隔30分钟检查一次服务器状态"}
+```
+
+【注意】
+1. 只有当用户明确表达创建定时任务/提醒的意图时才返回 JSON
+2. 普通对话不需要返回 JSON
+3. JSON 必须放在响应的最后
+4. description 字段保留用户的原始描述，不要修改
+"""
+
+# 前缀消息，用于注入系统提示词
+SYSTEM_PROMPT_PREFIX = "[系统指令]\n" + SCHEDULE_TASK_SYSTEM_PROMPT + "\n[用户消息]\n"
 
 
 class MessageType(Enum):
@@ -234,6 +286,7 @@ class IFlowClientService:
         message: str,
         on_tool_call: Optional[Callable[[ChatMessage], None]] = None,
         auto_reconnect: bool = True,
+        enable_task_detection: bool = True,
     ) -> AsyncGenerator[ChatMessage, None]:
         """
         流式查询处理
@@ -242,6 +295,7 @@ class IFlowClientService:
             message: 用户消息
             on_tool_call: 工具调用回调函数
             auto_reconnect: 是否在连接断开时自动重连
+            enable_task_detection: 是否启用定时任务意图检测（注入系统提示词）
         
         Yields:
             ChatMessage: 解析后的消息
@@ -271,8 +325,13 @@ class IFlowClientService:
             return
         
         try:
+            # 如果启用任务检测，注入系统提示词
+            actual_message = message
+            if enable_task_detection:
+                actual_message = SYSTEM_PROMPT_PREFIX + message
+            
             # 发送消息
-            await self._client.send_message(message)
+            await self._client.send_message(actual_message)
             logger.debug(f"Sent message: {message[:50]}...")
             
             # 接收并处理消息
@@ -517,3 +576,87 @@ async def close_iflow_client() -> None:
     if _global_client:
         await _global_client.disconnect()
         _global_client = None
+
+
+def extract_task_intent(response_text: str) -> Optional[Dict[str, Any]]:
+    """
+    从 AI 响应中提取定时任务意图
+    
+    Args:
+        response_text: AI 响应文本
+    
+    Returns:
+        Optional[Dict]: 如果检测到定时任务意图，返回 {"action": "create_task", "description": "..."}，否则返回 None
+    """
+    if not response_text:
+        return None
+    
+    # 尝试提取 ```json ... ``` 块中的内容
+    json_pattern = r'```json\s*([\s\S]*?)\s*```'
+    matches = re.findall(json_pattern, response_text)
+    
+    for match in matches:
+        try:
+            data = json.loads(match)
+            if isinstance(data, dict) and data.get("action") == "create_task":
+                description = data.get("description", "")
+                if description:
+                    logger.info(f"Extracted task intent: {description}")
+                    return data
+        except json.JSONDecodeError:
+            continue
+    
+    # 尝试提取 { ... } 块
+    brace_pattern = r'\{[^{}]*"action"\s*:\s*"create_task"[^{}]*\}'
+    matches = re.findall(brace_pattern, response_text)
+    
+    for match in matches:
+        try:
+            data = json.loads(match)
+            if isinstance(data, dict) and data.get("action") == "create_task":
+                description = data.get("description", "")
+                if description:
+                    logger.info(f"Extracted task intent: {description}")
+                    return data
+        except json.JSONDecodeError:
+            continue
+    
+    return None
+
+
+def remove_task_json_from_response(response_text: str) -> str:
+    """
+    从 AI 响应中移除定时任务 JSON 块，返回清理后的文本
+    
+    Args:
+        response_text: AI 响应文本
+    
+    Returns:
+        str: 清理后的文本
+    """
+    if not response_text:
+        return response_text
+    
+    # 1. 移除 ```json ... ``` 块（包含 create_task 的）
+    json_block_pattern = r'```json\s*\{[\s\S]*?"action"\s*:\s*"create_task"[\s\S]*?\}\s*```'
+    cleaned = re.sub(json_block_pattern, '', response_text)
+    
+    # 2. 移除 ``` ... ``` 块（普通代码块中的 JSON）
+    code_block_pattern = r'```\s*\{[\s\S]*?"action"\s*:\s*"create_task"[\s\S]*?\}\s*```'
+    cleaned = re.sub(code_block_pattern, '', cleaned)
+    
+    # 3. 移除独立的 { ... } 块（单行或多行）
+    # 处理多行 JSON
+    multiline_json_pattern = r'\{[\s\S]*?"action"\s*:\s*"create_task"[\s\S]*?\}'
+    cleaned = re.sub(multiline_json_pattern, '', cleaned)
+    
+    # 4. 移除纯 JSON 字符串（可能被转义）
+    escaped_json_pattern = r'"\{[^"]*\\"action\\"\s*:\s*\\"create_task\\"[^"]*\}"'
+    cleaned = re.sub(escaped_json_pattern, '', cleaned)
+    
+    # 5. 清理多余的空行和空格
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    cleaned = re.sub(r'^\s+$', '', cleaned, flags=re.MULTILINE)
+    cleaned = cleaned.strip()
+    
+    return cleaned

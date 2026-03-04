@@ -54,10 +54,10 @@ const TaskManager: React.FC<TaskManagerProps> = ({ onTaskCreated }) => {
   const handleToggleTask = async (taskId: string) => {
     try {
       const response = await apiService.toggleTask(taskId);
-      if (response.success) {
+      if (response.success && response.task) {
         setTasks((prev) =>
           prev.map((task) =>
-            task.id === taskId ? { ...task, enabled: response.enabled } : task
+            task.id === taskId ? response.task : task
           )
         );
       }

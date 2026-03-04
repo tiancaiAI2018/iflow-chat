@@ -121,8 +121,8 @@ class ApiService {
     return response.data;
   }
 
-  async toggleTask(taskId: string): Promise<{ success: boolean; enabled: boolean }> {
-    const response = await this.api.put<{ success: boolean; enabled: boolean }>(
+  async toggleTask(taskId: string): Promise<{ success: boolean; task: Task }> {
+    const response = await this.api.put<{ success: boolean; task: Task }>(
       `/tasks/${taskId}/toggle`
     );
     return response.data;

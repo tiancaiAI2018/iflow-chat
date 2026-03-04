@@ -37,6 +37,7 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
   const [showNotificationPopup, setShowNotificationPopup] = useState(false);
+  const { addNotification, unreadCount } = useNotifications();
 
   // 在通知页面时隐藏弹窗
   useEffect(() => {
@@ -49,6 +50,21 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     setShowNotificationPopup((prev) => !prev);
   };
 
+  // 克隆子元素并传递 onNotification 回调
+  const childrenWithProps = React.Children.map(children, (child) => {
+    if (React.isValidElement(child)) {
+      return React.cloneElement(child as React.ReactElement<{ onNotification?: (notification: { id: string; content: string; read: boolean; created_at: string; task_id?: string | null | undefined }) => void }>, {
+        onNotification: (notification: { id: string; content: string; read: boolean; created_at: string; task_id?: string | null | undefined }) => {
+          addNotification({
+            ...notification,
+            task_id: notification.task_id ?? null,
+          });
+        },
+      });
+    }
+    return child;
+  });
+
   return (
     <div className="app-layout">
       <Header 
@@ -56,7 +72,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         showNotificationPopup={showNotificationPopup}
       />
       <main className="app-main">
-        {children}
+        {childrenWithProps}
         {showNotificationPopup && location.pathname !== '/notifications' && (
           <div className="notification-popup" onClick={() => setShowNotificationPopup(false)}>
             <div onClick={(e) => e.stopPropagation()}>

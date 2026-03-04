@@ -126,9 +126,9 @@ class TaskScheduler:
     """任务调度器"""
     
     def __init__(self):
+        # 使用 AsyncIOScheduler 默认的异步执行器，支持异步任务
         self.scheduler = AsyncIOScheduler(
             jobstores={'default': MemoryJobStore()},
-            executors={'default': ThreadPoolExecutor(20)},
             timezone='Asia/Shanghai'
         )
         self.task_store = TaskStore()

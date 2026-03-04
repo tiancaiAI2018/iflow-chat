@@ -2,6 +2,7 @@
 任务执行服务
 定时任务触发后执行：调用 iFlow、保存通知、WebSocket 推送
 包含错误处理和重试机制
+支持详细日志记录和通知推送优化
 """
 import asyncio
 import logging
@@ -52,7 +53,13 @@ class TaskExecutor:
         Returns:
             Dict: 执行结果
         """
-        logger.info(f"Executing task: user_id={user_id}, task_id={task_id}, content={content[:50]}...")
+        logger.info(f"========================================")
+        logger.info(f"[TaskExecutor] Starting task execution")
+        logger.info(f"  user_id: {user_id}")
+        logger.info(f"  task_id: {task_id}")
+        logger.info(f"  content: {content[:100]}...")
+        logger.info(f"  timestamp: {datetime.now().isoformat()}")
+        logger.info(f"========================================")
         
         result = {
             "success": False,
@@ -72,29 +79,46 @@ class TaskExecutor:
         # 带重试的执行
         for retry_count in range(self.max_retries + 1):
             try:
+                logger.info(f"[TaskExecutor] Attempt {retry_count + 1}/{self.max_retries + 1}")
+                
                 # 1. 调用 iFlow 执行任务
+                logger.info(f"[TaskExecutor] Calling iFlow...")
                 response = await self._call_iflow(content)
                 result["response"] = response
                 result["success"] = True
                 result["retries"] = retry_count
+                logger.info(f"[TaskExecutor] iFlow response received: {response[:100]}...")
                 
                 # 2. 构建通知内容
                 notification_content = self._build_notification_content(task_id, content, response)
+                logger.info(f"[TaskExecutor] Notification content prepared")
                 
                 # 3. 保存通知到文件（必须执行）
+                logger.info(f"[TaskExecutor] Saving notification to store...")
                 notification = self.notification_store.add_notification(
                     user_id=user_id,
                     task_id=task_id,
                     content=notification_content,
                 )
                 result["notification"] = notification
+                logger.info(f"[TaskExecutor] Notification saved: id={notification.get('id')}")
                 
                 # 4. 检测用户在线状态，在线则 WebSocket 推送
-                if self.websocket_manager.is_user_online(user_id):
+                is_online = self.websocket_manager.is_user_online(user_id)
+                logger.info(f"[TaskExecutor] User online status: {is_online}")
+                
+                if is_online:
+                    logger.info(f"[TaskExecutor] Attempting WebSocket push...")
                     pushed = await self._push_notification(user_id, notification)
                     result["pushed"] = pushed
+                    logger.info(f"[TaskExecutor] WebSocket push result: {pushed}")
+                else:
+                    logger.info(f"[TaskExecutor] User offline, notification saved to store only")
                 
-                logger.info(f"Task executed successfully: task_id={task_id}, pushed={result['pushed']}, retries={retry_count}")
+                logger.info(f"[TaskExecutor] Task execution completed successfully")
+                logger.info(f"  success: {result['success']}")
+                logger.info(f"  pushed: {result['pushed']}")
+                logger.info(f"  retries: {result['retries']}")
                 
                 # 记录执行历史
                 self._record_execution(task_id, result)
@@ -105,17 +129,17 @@ class TaskExecutor:
                 last_error = e
                 result["retries"] = retry_count
                 
+                logger.error(f"[TaskExecutor] Attempt {retry_count + 1} failed: {e}")
+                
                 if retry_count < self.max_retries:
-                    logger.warning(
-                        f"Task execution failed (attempt {retry_count + 1}): {e}. "
-                        f"Retrying in {self.retry_delay}s..."
-                    )
+                    logger.warning(f"[TaskExecutor] Retrying in {self.retry_delay}s...")
                     await asyncio.sleep(self.retry_delay)
                 else:
-                    logger.error(f"Task execution failed after {self.max_retries + 1} attempts: {e}")
+                    logger.error(f"[TaskExecutor] All {self.max_retries + 1} attempts failed")
         
         # 所有重试都失败
         result["error"] = str(last_error)
+        logger.error(f"[TaskExecutor] Task execution failed: {last_error}")
         
         # 即使执行失败，也保存失败通知
         try:
@@ -126,8 +150,9 @@ class TaskExecutor:
                 content=notification_content,
             )
             result["notification"] = notification
+            logger.info(f"[TaskExecutor] Failure notification saved")
         except Exception as save_error:
-            logger.error(f"Failed to save failure notification: {save_error}")
+            logger.error(f"[TaskExecutor] Failed to save failure notification: {save_error}")
         
         # 记录执行历史
         self._record_execution(task_id, result)

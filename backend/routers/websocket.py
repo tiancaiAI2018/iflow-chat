@@ -1,6 +1,7 @@
 """
 WebSocket 路由
 处理 WebSocket 连接、消息路由、认证验证
+支持定时任务意图识别和自动创建
 """
 import asyncio
 import logging
@@ -22,7 +23,11 @@ from backend.services.iflow_client import (
     IFlowClientService,
     get_iflow_client,
     MessageType as IFlowMessageType,
+    extract_task_intent,
+    remove_task_json_from_response,
 )
+from backend.services.scheduler import get_scheduler
+from backend.services.task_parser import get_task_parser
 from backend.database import get_db
 from backend.models.user import User, ChatHistory
 from sqlalchemy import select
@@ -400,10 +405,11 @@ async def handle_chat_message(
             return
     
     # 发送消息到 iFlow 并处理响应
+    # 启用定时任务意图检测
     full_response = []
     
     try:
-        async for msg in iflow_client.query_stream(content):
+        async for msg in iflow_client.query_stream(content, enable_task_detection=True):
             if msg.type == IFlowMessageType.TEXT:
                 # 文本消息
                 if msg.content:
@@ -460,12 +466,122 @@ async def handle_chat_message(
         )
         return
     
+    # 处理完整的 AI 响应
+    response_text = "".join(full_response)
+    
+    # 检查是否有定时任务意图
+    task_intent = extract_task_intent(response_text)
+    if task_intent:
+        # 从响应中移除 JSON 块
+        cleaned_response = remove_task_json_from_response(response_text)
+        
+        # 尝试创建定时任务
+        task_description = task_intent.get("description", content)
+        task_created = await try_create_task_from_intent(
+            websocket=websocket,
+            user_id=user_id,
+            description=task_description,
+        )
+        
+        # 更新保存的响应内容（移除 JSON 块）
+        response_text = cleaned_response
+    
     # 保存助手响应到数据库
-    if full_response:
+    if response_text:
         assistant_msg = ChatHistory(
             user_id=user_id,
             role="assistant",
-            content="".join(full_response),
+            content=response_text,
         )
         db.add(assistant_msg)
         await db.commit()
+
+
+async def try_create_task_from_intent(
+    websocket: WebSocket,
+    user_id: int,
+    description: str,
+) -> bool:
+    """
+    尝试从意图创建定时任务
+    
+    Args:
+        websocket: WebSocket 连接
+        user_id: 用户 ID
+        description: 任务描述
+    
+    Returns:
+        bool: 是否创建成功
+    """
+    from backend.services.notification_store import get_notification_store
+    
+    logger.info(f"Trying to create task from intent: user_id={user_id}, description={description}")
+    
+    notification_store = get_notification_store()
+    
+    try:
+        # 解析自然语言
+        parser = get_task_parser()
+        parsed_task = await parser.parse(description)
+        
+        if not parsed_task.success:
+            logger.warning(f"Failed to parse task: {parsed_task.error}")
+            # 保存并发送错误通知
+            notification = notification_store.add_notification(
+                user_id=user_id,
+                task_id=None,
+                content=f"定时任务创建失败：{parsed_task.error}",
+            )
+            await websocket.send_json(
+                NotificationResponse(notification=notification).model_dump()
+            )
+            return False
+        
+        # 验证 Cron 表达式
+        if not parser.validate_cron(parsed_task.cron_expression):
+            logger.warning(f"Invalid cron expression: {parsed_task.cron_expression}")
+            notification = notification_store.add_notification(
+                user_id=user_id,
+                task_id=None,
+                content="定时任务创建失败：生成的时间表达式无效",
+            )
+            await websocket.send_json(
+                NotificationResponse(notification=notification).model_dump()
+            )
+            return False
+        
+        # 创建任务
+        scheduler = get_scheduler()
+        task = scheduler.add_task(
+            user_id=user_id,
+            content=parsed_task.content,
+            cron=parsed_task.cron_expression,
+            natural_language=description,
+            enabled=True
+        )
+        
+        logger.info(f"Task created successfully: task_id={task.id}, cron={task.cron}")
+        
+        # 保存并发送任务创建成功通知
+        notification = notification_store.add_notification(
+            user_id=user_id,
+            task_id=task.id,
+            content=f"✅ 定时任务创建成功！\n任务：{parsed_task.content}\n时间：{description}\nCron：{task.cron}",
+        )
+        await websocket.send_json(
+            NotificationResponse(notification=notification).model_dump()
+        )
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error creating task: {e}")
+        notification = notification_store.add_notification(
+            user_id=user_id,
+            task_id=None,
+            content=f"定时任务创建失败：{str(e)}",
+        )
+        await websocket.send_json(
+            NotificationResponse(notification=notification).model_dump()
+        )
+        return False
