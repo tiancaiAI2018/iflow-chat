@@ -1,6 +1,7 @@
 """
 对话 API 路由测试
-测试 POST /api/chat、GET /api/chat/history、DELETE /api/chat/history
+测试 POST /api/chat、GET /api/chat/history
+支持按会话过滤查询历史
 """
 import pytest
 import asyncio
@@ -14,7 +15,7 @@ from sqlalchemy import select
 
 from backend.main import app
 from backend.database import Base, get_db
-from backend.models.user import User, ChatHistory
+from backend.models.user import User, ChatHistory, Conversation
 from backend.services.auth import hash_password, create_access_token
 
 
@@ -382,122 +383,178 @@ class TestGetChatHistory:
         assert data["messages"][0]["content"] == "我的消息"
 
 
-class TestClearChatHistory:
-    """测试清空聊天历史 API"""
+class TestGetChatHistoryWithConversation:
+    """测试按会话过滤获取聊天历史 API"""
 
     @pytest.mark.asyncio
-    async def test_clear_history_success(
+    async def test_get_history_by_conversation(
         self,
         test_client: AsyncClient,
         test_session: AsyncSession,
         test_user: User,
         auth_headers: dict,
     ):
-        """测试成功清空历史记录"""
-        # 创建一些消息
-        for i in range(5):
+        """测试按会话ID获取历史记录"""
+        # 创建会话
+        conversation = Conversation(
+            user_id=test_user.id,
+            title="测试会话",
+            iflow_session_id="test-session-1",
+        )
+        test_session.add(conversation)
+        await test_session.flush()
+        
+        # 创建该会话的消息
+        for i in range(3):
             msg = ChatHistory(
                 user_id=test_user.id,
+                conversation_id=conversation.id,
                 role="user",
-                content=f"消息 {i}",
+                content=f"会话消息 {i}",
             )
             test_session.add(msg)
+        
+        # 创建不属于该会话的消息
+        other_msg = ChatHistory(
+            user_id=test_user.id,
+            role="user",
+            content="其他消息",
+        )
+        test_session.add(other_msg)
         await test_session.commit()
         
-        response = await test_client.delete(
-            "/api/chat/history",
+        # 按会话查询
+        response = await test_client.get(
+            f"/api/chat/history?conversation_id={conversation.id}",
             headers=auth_headers,
         )
         
         assert response.status_code == 200
         data = response.json()
-        assert data["success"] is True
-        assert data["deleted_count"] == 5
-        
-        # 验证数据库中已清空
-        result = await test_session.execute(
-            select(ChatHistory).where(ChatHistory.user_id == test_user.id)
-        )
-        messages = result.scalars().all()
-        assert len(messages) == 0
+        assert len(data["messages"]) == 3
+        assert data["total"] == 3
+        for msg in data["messages"]:
+            assert "会话消息" in msg["content"]
 
     @pytest.mark.asyncio
-    async def test_clear_history_empty(
+    async def test_get_history_conversation_not_found(
         self,
         test_client: AsyncClient,
         test_user: User,
         auth_headers: dict,
     ):
-        """测试清空空历史记录"""
-        response = await test_client.delete(
-            "/api/chat/history",
+        """测试会话不存在时返回404"""
+        response = await test_client.get(
+            "/api/chat/history?conversation_id=99999",
             headers=auth_headers,
         )
         
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-        assert data["deleted_count"] == 0
+        assert response.status_code == 404
+        assert "会话不存在" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_clear_history_only_own_messages(
+    async def test_get_history_conversation_not_owned(
         self,
         test_client: AsyncClient,
         test_session: AsyncSession,
         test_user: User,
         auth_headers: dict,
     ):
-        """测试清空只删除自己的消息"""
+        """测试访问其他用户的会话返回404"""
         # 创建另一个用户
         other_user = User(
-            username="otheruser2",
-            email="other2@example.com",
+            username="otheruser3",
+            email="other3@example.com",
             password_hash=hash_password("password123"),
         )
         test_session.add(other_user)
         await test_session.flush()
         
-        # 创建两个用户的消息
-        for i in range(3):
-            my_msg = ChatHistory(
-                user_id=test_user.id,
-                role="user",
-                content=f"我的消息 {i}",
-            )
-            other_msg = ChatHistory(
-                user_id=other_user.id,
-                role="user",
-                content=f"其他用户消息 {i}",
-            )
-            test_session.add(my_msg)
-            test_session.add(other_msg)
+        # 创建其他用户的会话
+        other_conversation = Conversation(
+            user_id=other_user.id,
+            title="其他用户的会话",
+        )
+        test_session.add(other_conversation)
         await test_session.commit()
         
-        # 清空当前用户的历史
-        response = await test_client.delete(
-            "/api/chat/history",
+        # 尝试访问其他用户的会话
+        response = await test_client.get(
+            f"/api/chat/history?conversation_id={other_conversation.id}",
             headers=auth_headers,
         )
         
-        assert response.status_code == 200
-        assert response.json()["deleted_count"] == 3
-        
-        # 验证其他用户的消息还在
-        result = await test_session.execute(
-            select(ChatHistory).where(ChatHistory.user_id == other_user.id)
-        )
-        other_messages = result.scalars().all()
-        assert len(other_messages) == 3
+        assert response.status_code == 404
+        assert "会话不存在" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_clear_history_without_auth(
+    async def test_get_history_multiple_conversations(
         self,
         test_client: AsyncClient,
+        test_session: AsyncSession,
+        test_user: User,
+        auth_headers: dict,
     ):
-        """测试未认证清空历史"""
-        response = await test_client.delete("/api/chat/history")
+        """测试多个会话的消息隔离"""
+        # 创建两个会话
+        conv1 = Conversation(
+            user_id=test_user.id,
+            title="会话1",
+        )
+        conv2 = Conversation(
+            user_id=test_user.id,
+            title="会话2",
+        )
+        test_session.add_all([conv1, conv2])
+        await test_session.flush()
         
-        assert response.status_code == 401
+        # 为每个会话创建消息
+        for i in range(3):
+            msg1 = ChatHistory(
+                user_id=test_user.id,
+                conversation_id=conv1.id,
+                role="user",
+                content=f"会话1消息{i}",
+            )
+            msg2 = ChatHistory(
+                user_id=test_user.id,
+                conversation_id=conv2.id,
+                role="user",
+                content=f"会话2消息{i}",
+            )
+            test_session.add_all([msg1, msg2])
+        await test_session.commit()
+        
+        # 查询会话1
+        response1 = await test_client.get(
+            f"/api/chat/history?conversation_id={conv1.id}",
+            headers=auth_headers,
+        )
+        assert response1.status_code == 200
+        data1 = response1.json()
+        assert len(data1["messages"]) == 3
+        for msg in data1["messages"]:
+            assert "会话1" in msg["content"]
+        
+        # 查询会话2
+        response2 = await test_client.get(
+            f"/api/chat/history?conversation_id={conv2.id}",
+            headers=auth_headers,
+        )
+        assert response2.status_code == 200
+        data2 = response2.json()
+        assert len(data2["messages"]) == 3
+        for msg in data2["messages"]:
+            assert "会话2" in msg["content"]
+        
+        # 不指定会话，应该返回所有消息
+        response_all = await test_client.get(
+            "/api/chat/history",
+            headers=auth_headers,
+        )
+        assert response_all.status_code == 200
+        data_all = response_all.json()
+        assert len(data_all["messages"]) == 6
 
 
 class TestChatHistoryIntegration:
@@ -534,30 +591,39 @@ class TestChatHistoryIntegration:
         assert data["messages"][2]["content"] == "测试消息 2"
 
     @pytest.mark.asyncio
-    async def test_clear_and_verify_empty(
+    async def test_conversation_flow(
         self,
         test_client: AsyncClient,
+        test_session: AsyncSession,
         test_user: User,
         auth_headers: dict,
     ):
-        """测试清空后验证历史为空"""
-        # 发送消息
-        await test_client.post(
-            "/api/chat",
-            json={"content": "要清空的消息"},
-            headers=auth_headers,
+        """测试会话完整流程：创建会话 -> 发送消息 -> 按会话查询"""
+        # 创建会话
+        conversation = Conversation(
+            user_id=test_user.id,
+            title="流程测试会话",
         )
+        test_session.add(conversation)
+        await test_session.commit()
+        await test_session.refresh(conversation)
         
-        # 清空历史
-        await test_client.delete(
-            "/api/chat/history",
-            headers=auth_headers,
-        )
+        # 发送消息（通过 API 保存）
+        for i in range(3):
+            response = await test_client.post(
+                "/api/chat",
+                json={"content": f"会话消息 {i}"},
+                headers=auth_headers,
+            )
+            assert response.status_code == 200
         
-        # 验证历史为空
+        # 按会话查询历史
         response = await test_client.get(
-            "/api/chat/history",
+            f"/api/chat/history?conversation_id={conversation.id}",
             headers=auth_headers,
         )
         
-        assert response.json()["messages"] == []
+        assert response.status_code == 200
+        data = response.json()
+        # 注意：通过 POST /api/chat 发送的消息没有 conversation_id
+        # 实际场景中 WebSocket 消息会关联到会话

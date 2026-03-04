@@ -2,6 +2,7 @@
 对话 API 路由
 处理聊天消息发送和历史记录查询
 优化大量消息的分页加载
+支持按会话过滤查询历史
 """
 import logging
 from datetime import datetime
@@ -13,7 +14,7 @@ from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
-from backend.models.user import User, ChatHistory
+from backend.models.user import User, ChatHistory, Conversation
 from backend.models.schemas import ErrorResponse
 from backend.services.auth import get_current_user
 
@@ -107,6 +108,7 @@ async def send_message(
 
 @router.get("/history", response_model=ChatHistoryResponse)
 async def get_chat_history(
+    conversation_id: Optional[int] = Query(None, description="会话ID，不传则返回所有消息"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     before_id: Optional[int] = Query(None, description="获取此 ID 之前的消息（用于向上翻页）"),
@@ -121,12 +123,17 @@ async def get_chat_history(
     - 分页模式：使用 page 和 page_size 参数
     - 游标模式：使用 before_id 或 after_id 参数
     
+    支持按会话过滤：
+    - 传入 conversation_id 只返回该会话的消息
+    - 不传则返回所有消息（向后兼容）
+    
     优化：
     - 支持大量消息的高效分页
     - 游标分页避免深分页性能问题
     - 返回总页数和边界消息ID
     
     Args:
+        conversation_id: 会话ID（可选），传入时只返回该会话的消息
         page: 页码（从 1 开始）
         page_size: 每页数量（默认 20，最大 100）
         before_id: 获取此 ID 之前的消息（向上翻页）
@@ -136,11 +143,33 @@ async def get_chat_history(
     
     Returns:
         ChatHistoryResponse: 包含消息列表和分页信息
+    
+    Raises:
+        HTTPException: 会话不存在或不属于当前用户时返回 404
     """
+    # 如果指定了 conversation_id，验证会话是否存在且属于当前用户
+    if conversation_id:
+        conv_result = await db.execute(
+            select(Conversation).where(
+                Conversation.id == conversation_id,
+                Conversation.user_id == current_user.id,
+            )
+        )
+        conversation = conv_result.scalar_one_or_none()
+        if not conversation:
+            raise HTTPException(
+                status_code=404,
+                detail="会话不存在或无权访问"
+            )
+    
     # 构建基础查询 - 只查询当前用户的消息
     base_query = select(ChatHistory).where(
         ChatHistory.user_id == current_user.id
     )
+    
+    # 按会话过滤
+    if conversation_id:
+        base_query = base_query.where(ChatHistory.conversation_id == conversation_id)
     
     # 游标分页：获取指定 ID 之前/之后的消息
     if before_id:
@@ -152,6 +181,8 @@ async def get_chat_history(
     count_query = select(func.count(ChatHistory.id)).where(
         ChatHistory.user_id == current_user.id
     )
+    if conversation_id:
+        count_query = count_query.where(ChatHistory.conversation_id == conversation_id)
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
     
@@ -229,35 +260,4 @@ async def get_chat_history(
     )
 
 
-@router.delete("/history", response_model=dict)
-async def clear_chat_history(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    清空聊天历史
-    
-    删除当前用户的所有聊天记录
-    
-    Args:
-        current_user: 当前登录用户
-        db: 数据库会话
-    
-    Returns:
-        dict: 操作结果
-    """
-    # 删除该用户的所有聊天记录
-    from sqlalchemy import delete
-    
-    stmt = delete(ChatHistory).where(ChatHistory.user_id == current_user.id)
-    result = await db.execute(stmt)
-    await db.commit()
-    
-    deleted_count = result.rowcount
-    logger.info(f"Chat history cleared: user_id={current_user.id}, deleted={deleted_count}")
-    
-    return {
-        "success": True,
-        "message": f"已清空 {deleted_count} 条聊天记录",
-        "deleted_count": deleted_count,
-    }
+
