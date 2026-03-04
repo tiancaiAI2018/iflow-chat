@@ -6,7 +6,7 @@ WebSocket 路由
 import asyncio
 import logging
 import json
-from typing import Optional, Any
+from typing import Optional, Any, Tuple
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends
@@ -28,8 +28,9 @@ from backend.services.iflow_client import (
 )
 from backend.services.scheduler import get_scheduler
 from backend.services.task_parser import get_task_parser
+from backend.services.conversation_service import ConversationService
 from backend.database import get_db
-from backend.models.user import User, ChatHistory
+from backend.models.user import User, ChatHistory, Conversation
 from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class ChatMessage(WSMessage):
     """聊天消息"""
     type: str = "chat"
     content: str
+    conversation_id: Optional[int] = None  # 会话 ID（可选，用于切换会话）
 
 
 class AuthMessage(WSMessage):
@@ -59,6 +61,12 @@ class AuthMessage(WSMessage):
 class PingMessage(WSMessage):
     """心跳消息"""
     type: str = "ping"
+
+
+class SwitchConversationMessage(WSMessage):
+    """切换会话消息"""
+    type: str = "switch_conversation"
+    conversation_id: int
 
 
 # ==================== 响应模型 ====================
@@ -130,6 +138,14 @@ class ConnectionStatusResponse(WSResponse):
     message: str
 
 
+class ConversationSwitchedResponse(WSResponse):
+    """会话切换响应"""
+    type: str = "conversation_switched"
+    conversation_id: int
+    title: str
+    iflow_session_id: Optional[str] = None
+
+
 # ==================== WebSocket 端点 ====================
 
 @router.websocket("/ws/{user_id}")
@@ -188,6 +204,9 @@ async def websocket_endpoint(
     user_session = manager.get_or_create_user_session(user_id)
     iflow_client = user_session.iflow_client
     
+    # 当前会话 ID（用于消息关联）
+    current_conversation_id: Optional[int] = None
+    
     try:
         # 消息循环
         while True:
@@ -237,6 +256,38 @@ async def websocket_endpoint(
                 # 心跳消息
                 await websocket.send_json(PongResponse().model_dump())
             
+            elif msg_type == "switch_conversation":
+                # 切换会话消息
+                if not manager.is_authenticated(connection_id):
+                    await websocket.send_json(
+                        ErrorResponse(
+                            message="Please authenticate first",
+                            code="NOT_AUTHENTICATED"
+                        ).model_dump()
+                    )
+                    continue
+                
+                conversation_id = data.get("conversation_id")
+                if not conversation_id:
+                    await websocket.send_json(
+                        ErrorResponse(
+                            message="conversation_id required",
+                            code="MISSING_CONVERSATION_ID"
+                        ).model_dump()
+                    )
+                    continue
+                
+                # 处理会话切换
+                current_conversation_id, iflow_client = await handle_switch_conversation(
+                    websocket=websocket,
+                    manager=manager,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    db=db,
+                    current_conversation_id=current_conversation_id,
+                    iflow_client=iflow_client,
+                )
+            
             elif msg_type == "chat":
                 # 聊天消息
                 if not manager.is_authenticated(connection_id):
@@ -252,8 +303,11 @@ async def websocket_endpoint(
                 if not content.strip():
                     continue
                 
+                # 获取消息中的 conversation_id（可选，用于首次指定会话）
+                message_conversation_id = data.get("conversation_id")
+                
                 # 处理聊天消息
-                iflow_client = await handle_chat_message(
+                current_conversation_id, iflow_client = await handle_chat_message(
                     websocket=websocket,
                     manager=manager,
                     connection_id=connection_id,
@@ -261,6 +315,7 @@ async def websocket_endpoint(
                     content=content,
                     db=db,
                     iflow_client=iflow_client,
+                    current_conversation_id=message_conversation_id or current_conversation_id,
                 )
             
             else:
@@ -363,7 +418,8 @@ async def handle_chat_message(
     content: str,
     db: AsyncSession,
     iflow_client: Optional[IFlowClientService],
-) -> Optional[IFlowClientService]:
+    current_conversation_id: Optional[int] = None,
+) -> Tuple[Optional[int], Optional[IFlowClientService]]:
     """
     处理聊天消息
     
@@ -375,15 +431,36 @@ async def handle_chat_message(
         content: 消息内容
         db: 数据库会话
         iflow_client: iFlow 客户端（可选）
+        current_conversation_id: 当前会话 ID（可选）
     
     Returns:
-        IFlowClientService: 更新后的 iFlow 客户端
+        Tuple[Optional[int], Optional[IFlowClientService]]: (更新后的会话 ID, 更新后的 iFlow 客户端)
     """
     logger.debug(f"Handling chat message: user_id={user_id}, content={content[:50]}...")
+    
+    # 获取或创建会话
+    conversation_service = ConversationService(db)
+    
+    if current_conversation_id:
+        # 验证会话存在且属于该用户
+        conversation = await conversation_service.get_conversation(current_conversation_id, user_id)
+        if not conversation:
+            logger.warning(f"Conversation {current_conversation_id} not found for user {user_id}")
+            current_conversation_id = None
+    
+    if not current_conversation_id:
+        # 创建新会话（AI 生成标题）
+        conversation = await conversation_service.create_conversation(
+            user_id=user_id,
+            first_message=content,
+        )
+        current_conversation_id = conversation.id
+        logger.info(f"Created new conversation {current_conversation_id} for user {user_id}")
     
     # 保存用户消息到数据库
     user_msg = ChatHistory(
         user_id=user_id,
+        conversation_id=current_conversation_id,
         role="user",
         content=content,
     )
@@ -410,7 +487,7 @@ async def handle_chat_message(
                     code="IFLOW_ERROR"
                 ).model_dump()
             )
-            return iflow_client
+            return current_conversation_id, iflow_client
     
     # 发送消息到 iFlow 并处理响应
     # 启用定时任务意图检测
@@ -472,7 +549,7 @@ async def handle_chat_message(
                 code="PROCESSING_ERROR"
             ).model_dump()
         )
-        return iflow_client
+        return current_conversation_id, iflow_client
     
     # 处理完整的 AI 响应
     response_text = "".join(full_response)
@@ -498,13 +575,124 @@ async def handle_chat_message(
     if response_text:
         assistant_msg = ChatHistory(
             user_id=user_id,
+            conversation_id=current_conversation_id,
             role="assistant",
             content=response_text,
         )
         db.add(assistant_msg)
         await db.commit()
     
-    return iflow_client
+    # 更新会话的 iFlow session_id
+    if iflow_client and iflow_client.session_id:
+        await conversation_service.update_conversation_iflow_session(
+            conversation_id=current_conversation_id,
+            user_id=user_id,
+            iflow_session_id=iflow_client.session_id,
+        )
+    
+    # 更新会话的活动时间
+    await conversation_service.touch_conversation(current_conversation_id, user_id)
+    
+    return current_conversation_id, iflow_client
+
+
+async def handle_switch_conversation(
+    websocket: WebSocket,
+    manager: WebSocketManager,
+    user_id: int,
+    conversation_id: int,
+    db: AsyncSession,
+    current_conversation_id: Optional[int],
+    iflow_client: Optional[IFlowClientService],
+) -> Tuple[Optional[int], Optional[IFlowClientService]]:
+    """
+    处理切换会话
+    
+    Args:
+        websocket: WebSocket 连接
+        manager: WebSocket 管理器
+        user_id: 用户 ID
+        conversation_id: 目标会话 ID
+        db: 数据库会话
+        current_conversation_id: 当前会话 ID
+        iflow_client: iFlow 客户端
+    
+    Returns:
+        Tuple[Optional[int], Optional[IFlowClientService]]: (切换后的会话 ID, 更新后的 iFlow 客户端)
+    """
+    logger.info(f"Switching conversation: user_id={user_id}, from={current_conversation_id}, to={conversation_id}")
+    
+    conversation_service = ConversationService(db)
+    
+    # 获取目标会话
+    conversation = await conversation_service.get_conversation(conversation_id, user_id)
+    if not conversation:
+        await websocket.send_json(
+            ErrorResponse(
+                message="Conversation not found or access denied",
+                code="CONVERSATION_NOT_FOUND"
+            ).model_dump()
+        )
+        return current_conversation_id, iflow_client
+    
+    # 如果会话有 iflow_session_id，尝试恢复 iFlow 会话
+    if conversation.iflow_session_id:
+        # 创建新的 iFlow 客户端并设置 session_id
+        new_iflow_client = IFlowClientService(session_id=conversation.iflow_session_id)
+        try:
+            await new_iflow_client.connect()
+            iflow_client = new_iflow_client
+            logger.info(f"Restored iFlow session: {conversation.iflow_session_id}")
+        except Exception as e:
+            logger.warning(f"Failed to restore iFlow session: {e}")
+            # 继续切换，只是无法恢复上下文
+            # 创建新的 iFlow 客户端
+            iflow_client = IFlowClientService()
+            try:
+                await iflow_client.connect()
+            except Exception as e2:
+                logger.error(f"Failed to create new iFlow connection: {e2}")
+                await websocket.send_json(
+                    ErrorResponse(
+                        message="Failed to connect to AI service",
+                        code="IFLOW_ERROR"
+                    ).model_dump()
+                )
+                return current_conversation_id, iflow_client
+    else:
+        # 会话没有 iflow_session_id，创建新的 iFlow 客户端
+        iflow_client = IFlowClientService()
+        try:
+            await iflow_client.connect()
+            # 保存新的 session_id 到会话
+            if iflow_client.session_id:
+                await conversation_service.update_conversation_iflow_session(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    iflow_session_id=iflow_client.session_id,
+                )
+        except Exception as e:
+            logger.error(f"Failed to create iFlow connection: {e}")
+            await websocket.send_json(
+                ErrorResponse(
+                    message="Failed to connect to AI service",
+                    code="IFLOW_ERROR"
+                ).model_dump()
+            )
+            return current_conversation_id, iflow_client
+    
+    # 发送切换成功响应
+    await websocket.send_json(
+        ConversationSwitchedResponse(
+            conversation_id=conversation.id,
+            title=conversation.title,
+            iflow_session_id=conversation.iflow_session_id,
+        ).model_dump()
+    )
+    
+    logger.info(f"Conversation switched: user_id={user_id}, conversation_id={conversation_id}")
+    
+    return conversation_id, iflow_client
 
 
 async def try_create_task_from_intent(

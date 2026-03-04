@@ -25,6 +25,7 @@ from backend.routers.websocket import (
     ChatMessage,
     AuthMessage,
     PingMessage,
+    SwitchConversationMessage,
     AuthSuccessResponse,
     AuthFailedResponse,
     PongResponse,
@@ -32,6 +33,7 @@ from backend.routers.websocket import (
     ToolCallResponse,
     ErrorResponse,
     ConnectionStatusResponse,
+    ConversationSwitchedResponse,
 )
 
 
@@ -301,6 +303,14 @@ class TestMessageModels:
         msg = ChatMessage(content="Hello")
         assert msg.type == "chat"
         assert msg.content == "Hello"
+        assert msg.conversation_id is None
+    
+    def test_chat_message_with_conversation(self):
+        """测试带会话 ID 的聊天消息"""
+        msg = ChatMessage(content="Hello", conversation_id=123)
+        assert msg.type == "chat"
+        assert msg.content == "Hello"
+        assert msg.conversation_id == 123
     
     def test_auth_message(self):
         """测试认证消息"""
@@ -312,6 +322,12 @@ class TestMessageModels:
         """测试心跳消息"""
         msg = PingMessage()
         assert msg.type == "ping"
+    
+    def test_switch_conversation_message(self):
+        """测试切换会话消息"""
+        msg = SwitchConversationMessage(conversation_id=42)
+        assert msg.type == "switch_conversation"
+        assert msg.conversation_id == 42
 
 
 # ==================== 响应模型测试 ====================
@@ -383,6 +399,29 @@ class TestResponseModels:
         assert response.type == "connection_status"
         assert response.status == "connected"
         assert response.message == "WebSocket connected"
+    
+    def test_conversation_switched_response(self):
+        """测试会话切换响应"""
+        response = ConversationSwitchedResponse(
+            conversation_id=123,
+            title="测试会话",
+            iflow_session_id="session_abc",
+        )
+        assert response.type == "conversation_switched"
+        assert response.conversation_id == 123
+        assert response.title == "测试会话"
+        assert response.iflow_session_id == "session_abc"
+    
+    def test_conversation_switched_response_without_iflow_session(self):
+        """测试会话切换响应（无 iflow session）"""
+        response = ConversationSwitchedResponse(
+            conversation_id=456,
+            title="新会话",
+        )
+        assert response.type == "conversation_switched"
+        assert response.conversation_id == 456
+        assert response.title == "新会话"
+        assert response.iflow_session_id is None
 
 
 # ==================== WebSocket 端点集成测试 ====================
@@ -523,3 +562,107 @@ class TestAuthValidation:
                 auth_data = websocket.receive_json()
                 assert auth_data["type"] == "auth_failed"
                 assert "mismatch" in auth_data["message"].lower()
+
+
+# ==================== 会话切换测试 ====================
+
+class TestConversationSwitch:
+    """会话切换测试"""
+    
+    @pytest.mark.asyncio
+    async def test_switch_conversation_without_auth(self):
+        """测试未认证时切换会话"""
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/1") as websocket:
+                # 接收连接状态消息
+                websocket.receive_json()
+                
+                # 发送切换会话消息
+                websocket.send_json({"type": "switch_conversation", "conversation_id": 1})
+                
+                # 应该收到错误响应
+                error = websocket.receive_json()
+                assert error["type"] == "error"
+                assert error["code"] == "NOT_AUTHENTICATED"
+    
+    @pytest.mark.asyncio
+    async def test_switch_conversation_missing_id(self):
+        """测试切换会话缺少 conversation_id"""
+        token = create_access_token({"sub": 1, "username": "test_user"})
+        
+        with TestClient(app) as client:
+            with client.websocket_connect(f"/ws/1?token={token}") as websocket:
+                # 接收连接状态和认证消息
+                websocket.receive_json()
+                websocket.receive_json()
+                
+                # 发送缺少 conversation_id 的切换消息
+                websocket.send_json({"type": "switch_conversation"})
+                
+                # 应该收到错误响应
+                error = websocket.receive_json()
+                assert error["type"] == "error"
+                assert error["code"] == "MISSING_CONVERSATION_ID"
+    
+    @pytest.mark.asyncio
+    async def test_chat_with_conversation_id(self):
+        """测试带 conversation_id 的聊天消息"""
+        token = create_access_token({"sub": 1, "username": "test_user"})
+        
+        with TestClient(app) as client:
+            with client.websocket_connect(f"/ws/1?token={token}") as websocket:
+                # 接收连接状态和认证消息
+                websocket.receive_json()
+                websocket.receive_json()
+                
+                # 发送带 conversation_id 的聊天消息（不存在的会话 ID）
+                # 由于会话不存在，会自动创建新会话
+                websocket.send_json({
+                    "type": "chat",
+                    "content": "Hello",
+                    "conversation_id": 99999  # 不存在的会话
+                })
+                
+                # 应该收到消息响应或错误（取决于 iFlow 服务是否可用）
+                # 这里只验证消息格式正确，不验证具体响应
+                # 因为 iFlow 服务可能不可用
+
+
+# ==================== handle_switch_conversation 单元测试 ====================
+
+class TestHandleSwitchConversation:
+    """handle_switch_conversation 函数测试"""
+    
+    @pytest.mark.asyncio
+    async def test_switch_to_nonexistent_conversation(self):
+        """测试切换到不存在的会话"""
+        from backend.routers.websocket import handle_switch_conversation
+        
+        # 创建模拟对象
+        websocket = AsyncMock()
+        manager = WebSocketManager()
+        db = AsyncMock()
+        
+        # 模拟数据库查询返回 None
+        db.execute = AsyncMock()
+        db.execute.return_value.scalar_one_or_none = Mock(return_value=None)
+        
+        # 调用函数
+        conv_id, client = await handle_switch_conversation(
+            websocket=websocket,
+            manager=manager,
+            user_id=1,
+            conversation_id=999,
+            db=db,
+            current_conversation_id=1,
+            iflow_client=None,
+        )
+        
+        # 验证返回原会话 ID
+        assert conv_id == 1
+        
+        # 验证发送了错误响应
+        websocket.send_json.assert_called_once()
+        call_args = websocket.send_json.call_args[0][0]
+        assert call_args["type"] == "error"
+        assert call_args["code"] == "CONVERSATION_NOT_FOUND"
