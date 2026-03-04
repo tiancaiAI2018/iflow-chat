@@ -13,7 +13,11 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     
     # CORS 配置
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://120.53.45.173:3000",
+    ]
     
     # JWT 配置
     JWT_SECRET_KEY: str = "your-secret-key-change-in-production"

@@ -1,0 +1,47 @@
+# Bug: 流式消息结束后内容消失
+
+## 问题
+用户发送消息后，AI 流式回复正常显示，但回复结束后消息气泡消失，内容看不见。
+
+## 原因
+
+### 后端 (backend/routers/websocket.py)
+- `if msg.content:` 过滤了空内容的完成消息
+- 前端收不到 `is_finished=true` 的标志
+- `TASK_FINISH` 类型消息未发送给前端
+
+### 前端 (frontend/src/hooks/useWebSocket.ts)
+- React 闭包问题：`currentAssistantMessage` 在 `setMessages` 中是旧值
+- 空内容的非 delta 消息会覆盖已累积的流式内容
+
+## 修复
+
+### 后端
+```python
+# websocket.py - 始终发送消息，包括空内容的完成消息
+await websocket.send_json(
+    AssistantMessageResponse(
+        content=msg.content,
+        is_delta=msg.is_delta,
+        is_finished=msg.is_finished,
+    ).model_dump()
+)
+```
+
+### 前端
+```typescript
+// useWebSocket.ts - 使用 ref 追踪累积内容，避免闭包问题
+const streamingContentRef = useRef<string>('');
+
+// 完成消息只作为结束信号，不覆盖累积内容
+if (message.is_finished) {
+  const finalContent = streamingContentRef.current;
+  // 添加到消息列表...
+}
+```
+
+## 排查方法
+1. 检查后端日志，确认消息已发送
+2. 检查浏览器 Network 面板，确认 WebSocket 消息
+3. 在前端添加 console.log 追踪消息状态
+4. 检查 React 闭包问题（state 在异步回调中的值）

@@ -408,6 +408,7 @@ async def handle_chat_message(
                 if msg.content:
                     full_response.append(msg.content)
                 
+                # 始终发送消息，包括空内容的完成消息
                 await websocket.send_json(
                     AssistantMessageResponse(
                         content=msg.content,
@@ -438,8 +439,14 @@ async def handle_chat_message(
                 )
             
             elif msg.type == IFlowMessageType.TASK_FINISH:
-                # 任务完成
-                pass
+                # 任务完成 - 发送完成标记给前端
+                await websocket.send_json(
+                    AssistantMessageResponse(
+                        content="",
+                        is_delta=False,
+                        is_finished=True,
+                    ).model_dump()
+                )
     
     except Exception as e:
         logger.error(f"Error processing chat message: {e}")

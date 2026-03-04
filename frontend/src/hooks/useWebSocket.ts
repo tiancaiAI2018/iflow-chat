@@ -202,34 +202,55 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   const [currentAssistantMessage, setCurrentAssistantMessage] = useState<string>('');
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCall[]>([]);
 
+  // 使用 ref 追踪累积的流式内容，避免闭包问题
+  const streamingContentRef = useRef<string>('');
+  const streamingToolCallsRef = useRef<ToolCall[]>([]);
+
   // 处理 WebSocket 消息
   const handleWSMessage = useCallback((message: WSMessage) => {
     switch (message.type) {
       case 'assistant_message':
+        // 处理消息内容
         if (message.is_delta) {
           // 流式消息：追加内容
-          setCurrentAssistantMessage((prev) => prev + (message.content || ''));
+          if (message.content) {
+            const newContent = streamingContentRef.current + message.content;
+            streamingContentRef.current = newContent;
+            setCurrentAssistantMessage(newContent);
+          }
           setIsStreaming(!message.is_finished);
-        } else {
-          // 完整消息：直接设置
-          setCurrentAssistantMessage(message.content || '');
+        } else if (message.content) {
+          // 完整消息：直接设置（仅在有内容时）
+          streamingContentRef.current = message.content;
+          setCurrentAssistantMessage(message.content);
           setIsStreaming(false);
         }
+        // 注意：空内容的非 delta 消息只作为结束信号，不覆盖累积内容
 
         // 消息结束，添加到消息列表
         if (message.is_finished) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `msg-${Date.now()}`,
-              role: 'assistant',
-              content: currentAssistantMessage + (message.content || ''),
-              toolCalls: currentToolCalls.length > 0 ? currentToolCalls : undefined,
-              created_at: new Date().toISOString(),
-            },
-          ]);
+          // 使用 ref 中的累积内容
+          const finalContent = streamingContentRef.current;
+          const finalToolCalls = [...streamingToolCallsRef.current];
+          
+          if (finalContent) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `msg-${Date.now()}`,
+                role: 'assistant',
+                content: finalContent,
+                toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
+                created_at: new Date().toISOString(),
+              },
+            ]);
+          }
+          // 清空 ref 和 state
+          streamingContentRef.current = '';
+          streamingToolCallsRef.current = [];
           setCurrentAssistantMessage('');
           setCurrentToolCalls([]);
+          setIsStreaming(false);
         }
         break;
 
@@ -241,18 +262,17 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           status: message.status || 'pending',
           result: message.result,
         };
-        setCurrentToolCalls((prev) => {
-          // 更新已存在的工具调用或添加新的
-          const existingIndex = prev.findIndex(
-            (tc) => tc.tool_name === newToolCall.tool_name
-          );
-          if (existingIndex >= 0) {
-            const updated = [...prev];
-            updated[existingIndex] = newToolCall;
-            return updated;
-          }
-          return [...prev, newToolCall];
-        });
+        
+        // 使用 ref 追踪工具调用
+        const existingIndex = streamingToolCallsRef.current.findIndex(
+          (tc) => tc.tool_name === newToolCall.tool_name
+        );
+        if (existingIndex >= 0) {
+          streamingToolCallsRef.current[existingIndex] = newToolCall;
+        } else {
+          streamingToolCallsRef.current.push(newToolCall);
+        }
+        setCurrentToolCalls([...streamingToolCallsRef.current]);
         break;
 
       case 'notification':
