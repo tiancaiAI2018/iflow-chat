@@ -90,6 +90,7 @@ describe('Chat Component', () => {
     mockUseChat.mockReturnValue({
       messages: [],
       isStreaming: false,
+      isWaiting: false,
       isConnected: true,
       error: null,
       sendMessage: jest.fn(),
@@ -116,6 +117,7 @@ describe('Chat Component', () => {
     mockUseChat.mockReturnValue({
       messages: [],
       isStreaming: false,
+      isWaiting: false,
       isConnected: false,
       error: null,
       sendMessage: jest.fn(),
@@ -136,6 +138,7 @@ describe('Chat Component', () => {
     mockUseChat.mockReturnValue({
       messages: [],
       isStreaming: false,
+      isWaiting: false,
       isConnected: false,
       error: null,
       sendMessage: jest.fn(),

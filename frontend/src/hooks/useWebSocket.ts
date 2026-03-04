@@ -175,6 +175,7 @@ interface ChatMessage {
   role: 'user' | 'assistant' | 'tool_call';
   content: string;
   isStreaming?: boolean;
+  isWaiting?: boolean;  // 等待后端响应
   toolCalls?: ToolCall[];
   toolCall?: ToolCall;  // 单个工具调用（用于独立的工具调用消息）
   created_at: string;
@@ -189,6 +190,7 @@ interface UseChatOptions {
 interface UseChatReturn {
   messages: ChatMessage[];
   isStreaming: boolean;
+  isWaiting: boolean;  // 是否正在等待后端响应
   isConnected: boolean;
   error: string | null;
   sendMessage: (content: string) => void;
@@ -200,6 +202,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isWaiting, setIsWaiting] = useState(false);  // 等待后端响应
   const [currentAssistantMessage, setCurrentAssistantMessage] = useState<string>('');
 
   // 使用 ref 追踪累积的流式内容，避免闭包问题
@@ -207,6 +210,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // 处理 WebSocket 消息
   const handleWSMessage = useCallback((message: WSMessage) => {
+    // 收到任何消息时，清除等待状态
+    setIsWaiting(false);
+
     switch (message.type) {
       case 'assistant_message':
         // 处理消息内容
@@ -352,6 +358,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       content,
     });
 
+    // 设置等待状态
+    setIsWaiting(true);
     setIsStreaming(true);
   }, [wsSendMessage]);
 
@@ -377,6 +385,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   return {
     messages: allMessages,
     isStreaming,
+    isWaiting,
     isConnected,
     error: wsError,
     sendMessage,

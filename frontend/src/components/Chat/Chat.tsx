@@ -23,6 +23,7 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
   const {
     messages,
     isStreaming,
+    isWaiting,
     isConnected,
     error,
     sendMessage,
@@ -116,11 +117,23 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
             role={msg.role}
             content={msg.content}
             isStreaming={msg.isStreaming}
+            isWaiting={msg.isWaiting}
             toolCalls={msg.toolCalls}
             toolCall={msg.toolCall}
             created_at={msg.created_at}
           />
         ))}
+        
+        {/* 等待后端响应时显示机器人加载动画 */}
+        {isWaiting && !messages.some(m => m.role === 'assistant' && m.isStreaming) && (
+          <Message
+            id="waiting"
+            role="assistant"
+            content=""
+            isWaiting={true}
+            created_at={new Date().toISOString()}
+          />
+        )}
         
         <div ref={messagesEndRef} />
       </div>

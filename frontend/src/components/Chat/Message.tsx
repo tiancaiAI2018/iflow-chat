@@ -12,6 +12,7 @@ interface MessageProps {
   role: 'user' | 'assistant' | 'tool_call';
   content: string;
   isStreaming?: boolean;
+  isWaiting?: boolean;  // 等待后端响应中
   toolCalls?: ToolCall[];
   toolCall?: ToolCall;  // 单个工具调用（用于独立的工具调用消息）
   created_at: string;
@@ -46,6 +47,7 @@ const Message: React.FC<MessageProps> = ({
   role,
   content,
   isStreaming,
+  isWaiting,
   toolCalls,
   toolCall,
 }) => {
@@ -69,6 +71,16 @@ const Message: React.FC<MessageProps> = ({
         {role === 'user' ? '👤' : '🤖'}
       </div>
       <div className="message-content">
+        {/* 等待状态显示加载动画 */}
+        {isWaiting && !content && (
+          <div className="message-waiting">
+            <div className="waiting-dots">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+        )}
         {content && (
           <div
             className="message-text"
