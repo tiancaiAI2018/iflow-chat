@@ -187,20 +187,29 @@ class TaskExecutor:
         """
         return self._execution_history.get(task_id, [])
     
-    async def _call_iflow(self, message: str) -> str:
+    async def _call_iflow(self, task_content: str) -> str:
         """
         调用 iFlow 执行任务
         
         Args:
-            message: 任务消息
+            task_content: 任务内容
         
         Returns:
             str: iFlow 响应
         """
+        # 构建带上下文的提示，让 iFlow 知道这是定时任务执行
+        context_message = f"""【定时任务触发通知】
+
+这是你之前帮用户创建的定时任务，现在时间到了，任务被触发执行。
+
+任务内容：{task_content}
+
+请直接执行这个任务，不要再次询问用户创建任务的细节。如果这是一个提醒任务，请直接给出提醒内容。"""
+        
         full_response = []
         
         async with IFlowClientService() as client:
-            async for msg in client.query_stream(message):
+            async for msg in client.query_stream(context_message):
                 if msg.type == MessageType.TEXT and msg.content:
                     full_response.append(msg.content)
                 elif msg.type == MessageType.ERROR:
@@ -225,7 +234,9 @@ class TaskExecutor:
         Returns:
             str: 格式化的通知内容
         """
-        return f"【定时任务执行结果】\n任务: {task_content}\n\n结果:\n{response}"
+        # 直接展示 iFlow 的响应结果
+        # iFlow 会根据上下文提示，返回合适的执行结果
+        return f"【定时任务】\n任务: {task_content}\n\n{response}"
     
     async def _push_notification(
         self,

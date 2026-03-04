@@ -95,7 +95,7 @@ const Header: React.FC<HeaderProps> = ({
           <span className="nav-text">任务</span>
         </button>
         <button 
-          className={`nav-item notification-btn ${isActive('/notifications') ? 'active' : ''}`}
+          className={`nav-item ${isActive('/notifications') ? 'active' : ''}`}
           onClick={handleNotificationClick}
         >
           <span className="nav-icon">🔔</span>

@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useAuth } from '../../hooks/useAuth';
-import { useChat } from '../../hooks/useWebSocket';
+import { useChatContext } from '../../contexts/ChatContext';
 import { apiService } from '../../services/api';
 import Message from './Message';
 import MessageInput from './MessageInput';
@@ -11,15 +10,10 @@ interface ChatProps {
 }
 
 const Chat: React.FC<ChatProps> = ({ onNotification }) => {
-  const { user, token } = useAuth();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
 
-  // 获取 WebSocket URL
-  const wsUrl = user ? apiService.getWebSocketUrl(user.id) : '';
-
-  // 使用 useChat hook 管理对话状态
+  // 使用 ChatContext 获取共享的对话状态（WebSocket 连接由 Context 管理）
   const {
     messages,
     isStreaming,
@@ -28,36 +22,7 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
     error,
     sendMessage,
     clearMessages,
-  } = useChat({
-    userId: user?.id || 0,
-    wsUrl,
-    onNotification,
-  });
-
-  // 加载历史消息
-  useEffect(() => {
-    const loadHistory = async () => {
-      if (!user) return;
-      
-      setIsLoadingHistory(true);
-      try {
-        const response = await apiService.getChatHistory({ page: 1, page_size: 50 });
-        // 历史消息会在 Chat 组件内部处理，这里只是预加载
-        // 如果需要显示历史消息，可以扩展 useChat 来支持初始化消息
-      } catch (err) {
-        console.error('Failed to load chat history:', err);
-      } finally {
-        setIsLoadingHistory(false);
-      }
-    };
-
-    loadHistory();
-  }, [user]);
-
-  // 监听连接状态
-  useEffect(() => {
-    setConnectionStatus(isConnected ? 'connected' : 'connecting');
-  }, [isConnected]);
+  } = useChatContext();
 
   // 滚动到底部
   const scrollToBottom = () => {
@@ -68,6 +33,11 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // 监听连接状态
+  useEffect(() => {
+    setConnectionStatus(isConnected ? 'connected' : 'connecting');
+  }, [isConnected]);
 
   // 处理发送消息
   const handleSend = (content: string) => {
@@ -99,11 +69,7 @@ const Chat: React.FC<ChatProps> = ({ onNotification }) => {
 
       {/* 消息列表 */}
       <div className="messages-container">
-        {isLoadingHistory && (
-          <div className="loading-indicator">加载历史消息...</div>
-        )}
-        
-        {messages.length === 0 && !isLoadingHistory && (
+        {messages.length === 0 && (
           <div className="empty-chat">
             <div className="empty-chat-icon">💬</div>
             <div className="empty-chat-text">开始和 iFlow 对话吧！</div>

@@ -69,6 +69,8 @@
   position: relative;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .nav-item:hover {
@@ -89,11 +91,11 @@
   font-size: 1.1rem;
 }
 
-/* Notification Badge */
+/* Notification Badge - 相对悬浮在右上角 */
 .notification-badge {
   position: absolute;
-  top: 2px;
-  right: 6px;
+  top: -4px;
+  right: -8px;
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
@@ -105,7 +107,6 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  animation: badge-pulse 2s infinite;
 }
 
 @keyframes badge-pulse {

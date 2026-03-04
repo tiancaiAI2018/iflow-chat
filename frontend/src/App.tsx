@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
-import { useNotifications } from './hooks/useNotifications';
+import { useNotifications, NotificationProvider } from './hooks/useNotifications';
+import { ChatProvider } from './contexts/ChatContext';
 import { Login, Register, LoginEmail } from './components/Auth';
 import { Chat } from './components/Chat';
 import { TaskManager } from './components/TaskManager';
@@ -85,6 +86,28 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   );
 };
 
+// 受保护的路由内容 - 在 Provider 内部
+const ProtectedContent: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { addNotification } = useNotifications();
+  
+  return (
+    <ChatProvider onNotification={addNotification}>
+      <AppLayout>{children}</AppLayout>
+    </ChatProvider>
+  );
+};
+
+// 受保护的路由容器
+const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  return (
+    <ProtectedRoute>
+      <NotificationProvider>
+        <ProtectedContent>{children}</ProtectedContent>
+      </NotificationProvider>
+    </ProtectedRoute>
+  );
+};
+
 function App() {
   return (
     <BrowserRouter>
@@ -95,30 +118,9 @@ function App() {
         <Route path="/register" element={<Register />} />
 
         {/* 受保护路由 */}
-        <Route
-          path="/chat"
-          element={
-            <ProtectedRoute>
-              <AppLayout><Chat /></AppLayout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/tasks"
-          element={
-            <ProtectedRoute>
-              <AppLayout><TaskManager /></AppLayout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/notifications"
-          element={
-            <ProtectedRoute>
-              <AppLayout><NotificationsPage /></AppLayout>
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/chat" element={<ProtectedLayout><Chat /></ProtectedLayout>} />
+        <Route path="/tasks" element={<ProtectedLayout><TaskManager /></ProtectedLayout>} />
+        <Route path="/notifications" element={<ProtectedLayout><NotificationsPage /></ProtectedLayout>} />
 
         {/* 默认路由 */}
         <Route path="/" element={<Navigate to="/chat" replace />} />
