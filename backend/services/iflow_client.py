@@ -19,6 +19,7 @@ from iflow_sdk import (
     ToolCallStatus,
     StopReason,
 )
+from iflow_sdk.types import ToolResultMessage
 
 from backend.config import settings
 
@@ -285,9 +286,19 @@ class IFlowClientService:
                         is_finished=False,
                     )
                 
-                # 处理 ToolCallMessage（工具调用）
+                # 处理 ToolCallMessage（工具调用开始）
                 elif isinstance(msg, ToolCallMessage):
                     tool_msg = self._parse_tool_call(msg)
+                    
+                    # 调用回调
+                    if on_tool_call:
+                        on_tool_call(tool_msg)
+                    
+                    yield tool_msg
+                
+                # 处理 ToolResultMessage（工具调用结果/更新）
+                elif isinstance(msg, ToolResultMessage):
+                    tool_msg = self._parse_tool_result(msg)
                     
                     # 调用回调
                     if on_tool_call:
@@ -392,6 +403,54 @@ class IFlowClientService:
         
         # 日志记录，便于调试
         logger.debug(f"ToolCall: id={tool_id}, name={tool_name}, status={msg.status}, args={list(tool_args.keys()) if tool_args else []}, result_len={len(tool_result) if tool_result else 0}")
+        
+        return ChatMessage(
+            type=MessageType.TOOL_CALL,
+            tool_id=tool_id,
+            tool_name=tool_name,
+            tool_arguments=tool_args,
+            tool_status=status_map.get(msg.status, "in_progress"),
+            tool_result=tool_result,
+            tool_error=tool_error,
+        )
+    
+    def _parse_tool_result(self, msg: ToolResultMessage) -> ChatMessage:
+        """
+        解析工具结果消息
+        
+        Args:
+            msg: ToolResultMessage 消息
+        
+        Returns:
+            ChatMessage: 解析后的消息
+        """
+        status_map = {
+            ToolCallStatus.PENDING: "pending",
+            ToolCallStatus.IN_PROGRESS: "in_progress",
+            ToolCallStatus.RUNNING: "in_progress",
+            ToolCallStatus.COMPLETED: "completed",
+            ToolCallStatus.FAILED: "failed",
+        }
+        
+        # ToolResultMessage 中 args 和 content 都有值
+        tool_args = getattr(msg, 'args', None) or {}
+        
+        # 获取结果（从 content.markdown 字段提取）
+        tool_result = None
+        tool_error = None
+        if hasattr(msg, 'content') and msg.content:
+            content = msg.content
+            if hasattr(content, 'markdown') and content.markdown:
+                tool_result = content.markdown
+            if hasattr(content, 'error'):
+                tool_error = content.error
+        
+        # 获取工具名称和 ID
+        tool_name = msg.tool_name or "unknown"
+        tool_id = msg.id
+        
+        # 日志记录
+        logger.debug(f"ToolResult: id={tool_id}, name={tool_name}, status={msg.status}, args_keys={list(tool_args.keys()) if tool_args else []}, result_len={len(tool_result) if tool_result else 0}")
         
         return ChatMessage(
             type=MessageType.TOOL_CALL,

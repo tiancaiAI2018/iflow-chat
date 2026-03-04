@@ -204,8 +204,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // 使用 ref 追踪累积的流式内容，避免闭包问题
   const streamingContentRef = useRef<string>('');
-  // 用于追踪工具调用，支持按名称更新状态
-  const toolCallIndexRef = useRef<Map<string, number>>(new Map());
 
   // 处理 WebSocket 消息
   const handleWSMessage = useCallback((message: WSMessage) => {
@@ -261,9 +259,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
               return msg;
             })
           );
-          
-          // 清空工具调用索引
-          toolCallIndexRef.current.clear();
         }
         break;
 
@@ -279,36 +274,35 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         
         // 使用 tool_id 作为唯一标识符，如果没有则使用 tool_name
         const toolKey = message.tool_id || message.tool_name || 'unknown';
-        const existingIndex = toolCallIndexRef.current.get(toolKey);
         
-        if (existingIndex !== undefined) {
-          // 更新已存在的工具调用
-          setMessages((prev) => {
-            const updated = [...prev];
-            if (updated[existingIndex] && updated[existingIndex].toolCall) {
-              updated[existingIndex] = {
-                ...updated[existingIndex],
-                toolCall: newToolCall,
-              };
-            }
-            return updated;
-          });
-        } else {
-          // 添加新的工具调用消息
-          const newIndex = messages.length + (streamingContentRef.current ? 1 : 0);
-          toolCallIndexRef.current.set(toolKey, newIndex);
+        setMessages((prev) => {
+          // 在当前消息列表中查找是否已存在该工具调用
+          const existingIndex = prev.findIndex(
+            (msg) => msg.role === 'tool_call' && msg.toolCall?.tool_id === message.tool_id
+          );
           
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `tool-${Date.now()}-${toolKey}`,
-              role: 'tool_call',
-              content: '',
+          if (existingIndex >= 0) {
+            // 更新已存在的工具调用
+            const updated = [...prev];
+            updated[existingIndex] = {
+              ...updated[existingIndex],
               toolCall: newToolCall,
-              created_at: new Date().toISOString(),
-            },
-          ]);
-        }
+            };
+            return updated;
+          } else {
+            // 添加新的工具调用消息
+            return [
+              ...prev,
+              {
+                id: `tool-${Date.now()}-${toolKey}`,
+                role: 'tool_call' as const,
+                content: '',
+                toolCall: newToolCall,
+                created_at: new Date().toISOString(),
+              },
+            ];
+          }
+        });
         break;
 
       case 'notification':
@@ -342,7 +336,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     // 清空之前的流式状态
     streamingContentRef.current = '';
     setCurrentAssistantMessage('');
-    toolCallIndexRef.current.clear();
 
     // 添加用户消息到列表
     const userMessage: ChatMessage = {
@@ -367,7 +360,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     setMessages([]);
     setCurrentAssistantMessage('');
     streamingContentRef.current = '';
-    toolCallIndexRef.current.clear();
   }, []);
 
   // 合并当前正在流式输出的消息
