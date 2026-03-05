@@ -45,6 +45,7 @@ class Conversation(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="新会话")
     iflow_session_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    working_directory: Mapped[str] = mapped_column(String(500), nullable=False, default="/root/.iflow-bot/workspace")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 

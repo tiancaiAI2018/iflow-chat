@@ -280,3 +280,78 @@ class TestConversationModel:
         assert str(conversation.id) in repr_str
         assert str(conversation.user_id) in repr_str
         assert "repr测试" in repr_str
+
+    # ============= feat-001: working_directory 字段测试 =============
+
+    @pytest.mark.asyncio
+    async def test_conversation_working_directory_default(self, db_session: AsyncSession):
+        """测试 working_directory 字段默认值"""
+        user = User(
+            username="wddefault",
+            email="wddefault@example.com",
+            password_hash="hash"
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # 不指定 working_directory 创建会话
+        conversation = Conversation(user_id=user.id, title="默认工作目录测试")
+        db_session.add(conversation)
+        await db_session.commit()
+        await db_session.refresh(conversation)
+
+        # 验证默认值
+        assert conversation.working_directory == "/root/.iflow-bot/workspace"
+
+    @pytest.mark.asyncio
+    async def test_conversation_working_directory_custom(self, db_session: AsyncSession):
+        """测试 working_directory 字段自定义值"""
+        user = User(
+            username="wdcustom",
+            email="wdcustom@example.com",
+            password_hash="hash"
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # 指定自定义工作目录
+        custom_path = "/root/.iflow-bot/workspace/mybot"
+        conversation = Conversation(
+            user_id=user.id,
+            title="自定义工作目录测试",
+            working_directory=custom_path
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+        await db_session.refresh(conversation)
+
+        # 验证自定义值
+        assert conversation.working_directory == custom_path
+
+    @pytest.mark.asyncio
+    async def test_conversation_working_directory_boundary(self, db_session: AsyncSession):
+        """测试 working_directory 字段边界值"""
+        user = User(
+            username="wdboundary",
+            email="wdboundary@example.com",
+            password_hash="hash"
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # 测试长路径（接近 500 字符限制）
+        long_path = "/root/.iflow-bot/workspace/" + "a" * 400
+        conversation = Conversation(
+            user_id=user.id,
+            title="边界值测试",
+            working_directory=long_path
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+        await db_session.refresh(conversation)
+
+        # 验证长路径被正确存储
+        assert conversation.working_directory == long_path
