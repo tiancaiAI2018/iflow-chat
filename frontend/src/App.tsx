@@ -8,6 +8,7 @@ import { Chat } from './components/Chat';
 import { TaskManager } from './components/TaskManager';
 import { NotificationBar } from './components/Notification';
 import { Header } from './components/Layout';
+import { DirectoryTree } from './components/Workspace';
 import './App.css';
 
 // 通知页面组件
@@ -15,6 +16,26 @@ const NotificationsPage: React.FC = () => {
   return (
     <div className="notifications-page">
       <NotificationBar />
+    </div>
+  );
+};
+
+// 目录树测试页面组件
+const DirectoryTreeTestPage: React.FC = () => {
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+
+  return (
+    <div style={{ padding: '20px', maxWidth: '600px', margin: '0 auto' }}>
+      <h2>目录树组件测试</h2>
+      <DirectoryTree
+        selectedPath={selectedPath}
+        onSelect={setSelectedPath}
+      />
+      {selectedPath && (
+        <div style={{ marginTop: '16px', padding: '12px', background: '#f5f5f5', borderRadius: '8px' }}>
+          <strong>已选择：</strong> {selectedPath}
+        </div>
+      )}
     </div>
   );
 };
@@ -139,6 +160,7 @@ function App() {
         <Route path="/chat" element={<ProtectedLayout><Chat /></ProtectedLayout>} />
         <Route path="/tasks" element={<ProtectedLayout><TaskManager /></ProtectedLayout>} />
         <Route path="/notifications" element={<ProtectedLayout><NotificationsPage /></ProtectedLayout>} />
+        <Route path="/test-directory" element={<ProtectedLayout><DirectoryTreeTestPage /></ProtectedLayout>} />
 
         {/* 默认路由 */}
         <Route path="/" element={<Navigate to="/chat" replace />} />
