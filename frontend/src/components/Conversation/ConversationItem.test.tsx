@@ -12,6 +12,7 @@ const mockConversation: ConversationResponse = {
   user_id: 1,
   title: '测试会话标题',
   iflow_session_id: 'session-1',
+  working_directory: '/root/.iflow-bot/workspace',
   created_at: '2026-03-04T12:00:00Z',
   updated_at: '2026-03-04T12:00:00Z',
 };

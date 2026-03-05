@@ -112,7 +112,12 @@ describe('NewChatButton Component', () => {
   test('handles async createNewConversation', async () => {
     mockCreateNewConversation.mockResolvedValue({ 
       id: 2, 
-      title: 'Test Conversation' 
+      user_id: 1,
+      title: 'Test Conversation',
+      iflow_session_id: null,
+      working_directory: '/root/.iflow-bot/workspace',
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-01T00:00:00Z',
     });
     
     render(<NewChatButton />);

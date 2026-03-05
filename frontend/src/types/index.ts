@@ -130,6 +130,7 @@ export interface Conversation {
   user_id: number;
   title: string;
   iflow_session_id: string | null;
+  working_directory: string;
   created_at: string;
   updated_at: string;
 }
@@ -137,6 +138,7 @@ export interface Conversation {
 export interface ConversationCreate {
   title?: string;
   first_message?: string;
+  working_directory?: string;
 }
 
 export interface ConversationUpdate {
@@ -148,6 +150,7 @@ export interface ConversationResponse {
   user_id: number;
   title: string;
   iflow_session_id: string | null;
+  working_directory: string;
   created_at: string;
   updated_at: string;
 }
@@ -170,4 +173,17 @@ export interface ApiResponse<T = unknown> {
   success: boolean;
   message?: string;
   data?: T;
+}
+
+// 目录相关类型
+export interface DirectoryNode {
+  name: string;
+  path: string;
+  children?: DirectoryNode[];
+}
+
+export interface DirectoryListResponse {
+  success: boolean;
+  directories: DirectoryNode[];
+  root_path: string;
 }
