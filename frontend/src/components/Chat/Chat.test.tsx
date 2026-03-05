@@ -100,6 +100,12 @@ const defaultChatContextValue = {
   switchConversation: jest.fn(),
   createNewConversation: jest.fn(),
   deleteConversation: jest.fn(),
+  // 工作目录选择相关
+  showWorkspaceModal: false,
+  isCreatingConversation: false,
+  openWorkspaceModal: jest.fn(),
+  closeWorkspaceModal: jest.fn(),
+  createNewConversationWithWorkspace: jest.fn(),
 };
 
 describe('Chat Component', () => {

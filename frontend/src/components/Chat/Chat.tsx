@@ -3,6 +3,7 @@ import { useChatContext } from '../../contexts/ChatContext';
 import Message from './Message';
 import MessageInput from './MessageInput';
 import ConversationDrawer from '../Conversation/ConversationDrawer';
+import WorkspaceSelectModal from '../Workspace/WorkspaceSelectModal';
 import './Chat.css';
 
 interface ChatProps {
@@ -38,6 +39,11 @@ const Chat: React.FC<ChatProps> = ({
     switchConversation,
     createNewConversation,
     deleteConversation,
+    // 工作目录选择相关
+    showWorkspaceModal,
+    isCreatingConversation,
+    closeWorkspaceModal,
+    createNewConversationWithWorkspace,
   } = useChatContext();
 
   // 滚动到底部
@@ -138,6 +144,14 @@ const Chat: React.FC<ChatProps> = ({
       <ConversationDrawer 
         isOpen={isConversationDrawerOpen} 
         onClose={onCloseConversationDrawer || (() => {})} 
+      />
+
+      {/* 工作目录选择对话框 */}
+      <WorkspaceSelectModal
+        isOpen={showWorkspaceModal}
+        onClose={closeWorkspaceModal}
+        onConfirm={createNewConversationWithWorkspace}
+        isCreating={isCreatingConversation}
       />
     </div>
   );

@@ -31,6 +31,12 @@ interface ChatContextValue {
   switchConversation: (conversationId: number) => Promise<void>;
   createNewConversation: (firstMessage?: string) => Promise<ConversationResponse | null>;
   deleteConversation: (conversationId: number) => Promise<boolean>;
+  // 工作目录选择相关
+  showWorkspaceModal: boolean;
+  isCreatingConversation: boolean;
+  openWorkspaceModal: () => void;
+  closeWorkspaceModal: () => void;
+  createNewConversationWithWorkspace: (workingDirectory: string) => Promise<ConversationResponse | null>;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -53,6 +59,10 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
   const [conversations, setConversations] = useState<ConversationResponse[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<number | null>(null);
   const [isLoadingConversations, setIsLoadingConversations] = useState(false);
+  
+  // 工作目录选择相关状态
+  const [showWorkspaceModal, setShowWorkspaceModal] = useState(false);
+  const [isCreatingConversation, setIsCreatingConversation] = useState(false);
 
   // 使用 ref 追踪 WebSocket 和流式内容
   const wsRef = useRef<WebSocket | null>(null);
@@ -119,13 +129,34 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     }
   }, [currentConversationId]);
 
-  // 创建新会话
+  // 创建新会话（支持工作目录参数）
   const createNewConversation = useCallback(async (_firstMessage?: string): Promise<ConversationResponse | null> => {
+    // 打开工作目录选择对话框，而不是直接创建
+    setShowWorkspaceModal(true);
+    return null;
+  }, []);
+
+  // 打开工作目录选择对话框
+  const openWorkspaceModal = useCallback(() => {
+    setShowWorkspaceModal(true);
+  }, []);
+
+  // 关闭工作目录选择对话框
+  const closeWorkspaceModal = useCallback(() => {
+    if (!isCreatingConversation) {
+      setShowWorkspaceModal(false);
+    }
+  }, [isCreatingConversation]);
+
+  // 创建新会话并指定工作目录
+  const createNewConversationWithWorkspace = useCallback(async (workingDirectory: string): Promise<ConversationResponse | null> => {
     if (!user) return null;
     
+    setIsCreatingConversation(true);
+    
     try {
-      // 不传 first_message，让后端使用默认标题，确保快速返回
-      const response = await apiService.createConversation();
+      // 调用后端 API 创建会话，传递 working_directory 参数
+      const response = await apiService.createConversation({ working_directory: workingDirectory });
       
       const newConversation = response.conversation;
       
@@ -140,6 +171,9 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       setCurrentAssistantMessage('');
       streamingContentRef.current = '';
       
+      // 关闭对话框
+      setShowWorkspaceModal(false);
+      
       // 发送切换会话消息到 WebSocket
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
@@ -153,6 +187,8 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       console.error('Failed to create conversation:', err);
       setError('创建会话失败，请稍后重试');
       return null;
+    } finally {
+      setIsCreatingConversation(false);
     }
   }, [user]);
 
@@ -324,9 +360,9 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
           conversation_id: currentConversationIdRef.current,
         }));
       } else {
-        // 没有当前会话时，自动创建新会话
+        // 没有当前会话时，自动创建新会话（使用默认工作目录）
         try {
-          const response = await apiService.createConversation();
+          const response = await apiService.createConversation({ working_directory: '/root/.iflow-bot/workspace' });
           if (response?.conversation && mountedRef.current) {
             const newConv = response.conversation;
             setConversations(prev => [newConv, ...prev]);
@@ -405,16 +441,26 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     streamingContentRef.current = '';
     setCurrentAssistantMessage('');
 
-    // 如果没有当前会话，先创建一个新会话
+    // 如果没有当前会话，使用默认工作目录自动创建一个新会话
     let conversationIdToSend = currentConversationId;
     if (!conversationIdToSend) {
       try {
-        const newConv = await createNewConversation();
-        if (!newConv) {
-          setError('创建会话失败，请刷新页面重试');
-          return;
+        // 直接调用 API 创建会话（使用默认工作目录）
+        const response = await apiService.createConversation({ working_directory: '/root/.iflow-bot/workspace' });
+        if (response?.conversation) {
+          const newConv = response.conversation;
+          setConversations(prev => [newConv, ...prev]);
+          setCurrentConversationId(newConv.id);
+          conversationIdToSend = newConv.id;
+          
+          // 发送切换会话消息到 WebSocket
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({
+              type: 'switch_conversation',
+              conversation_id: newConv.id,
+            }));
+          }
         }
-        conversationIdToSend = newConv.id;
       } catch (err) {
         console.error('Error creating conversation:', err);
         setError('创建会话失败，请稍后重试');
@@ -443,7 +489,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     } else {
       setError('连接已断开，请刷新页面重试');
     }
-  }, [currentConversationId, createNewConversation]);
+  }, [currentConversationId]);
 
   // 清空消息（保留用于清空当前显示）
   const clearMessages = useCallback(() => {
@@ -481,6 +527,12 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     switchConversation,
     createNewConversation,
     deleteConversation,
+    // 工作目录选择相关
+    showWorkspaceModal,
+    isCreatingConversation,
+    openWorkspaceModal,
+    closeWorkspaceModal,
+    createNewConversationWithWorkspace,
   };
 
   return (

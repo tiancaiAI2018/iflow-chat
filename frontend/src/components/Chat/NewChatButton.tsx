@@ -8,21 +8,17 @@ interface NewChatButtonProps {
 
 /**
  * 新建会话按钮组件
- * 点击创建新会话并切换到该会话
+ * 点击打开工作目录选择对话框
  */
 const NewChatButton: React.FC<NewChatButtonProps> = ({ className = '' }) => {
-  const { createNewConversation, isStreaming } = useChatContext();
+  const { openWorkspaceModal, isStreaming } = useChatContext();
 
   const handleClick = async () => {
     // 如果正在流式输出，不允许创建新会话
     if (isStreaming) return;
     
-    try {
-      await createNewConversation();
-    } catch (error) {
-      // 错误由 Context 处理，这里静默处理
-      console.error('Failed to create conversation:', error);
-    }
+    // 打开工作目录选择对话框
+    openWorkspaceModal();
   };
 
   return (

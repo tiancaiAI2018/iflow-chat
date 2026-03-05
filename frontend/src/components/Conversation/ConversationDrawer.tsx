@@ -53,10 +53,10 @@ const ConversationDrawer: React.FC<ConversationDrawerProps> = ({ isOpen, onClose
     }
   };
 
-  // 新建会话
-  const handleNewChat = async () => {
-    await createNewConversation();
-    onClose();
+  // 新建会话 - 打开工作目录选择对话框
+  const handleNewChat = () => {
+    // 不关闭抽屉，让用户选择工作目录后由 Context 处理
+    // onClose() 会由 createNewConversationWithWorkspace 成功后自动处理
   };
 
   // 触摸滑动关闭

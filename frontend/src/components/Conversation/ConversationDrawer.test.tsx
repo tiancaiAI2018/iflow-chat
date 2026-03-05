@@ -49,6 +49,7 @@ describe('ConversationDrawer Component', () => {
   const mockSwitchConversation = jest.fn();
   const mockDeleteConversation = jest.fn();
   const mockCreateNewConversation = jest.fn();
+  const mockOpenWorkspaceModal = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -68,6 +69,12 @@ describe('ConversationDrawer Component', () => {
       switchConversation: mockSwitchConversation,
       createNewConversation: mockCreateNewConversation,
       deleteConversation: mockDeleteConversation,
+      // 工作目录选择相关
+      showWorkspaceModal: false,
+      isCreatingConversation: false,
+      openWorkspaceModal: mockOpenWorkspaceModal,
+      closeWorkspaceModal: jest.fn(),
+      createNewConversationWithWorkspace: jest.fn(),
     });
   });
 
@@ -362,6 +369,12 @@ describe('ConversationDrawer Touch Interactions', () => {
       switchConversation: jest.fn(),
       createNewConversation: jest.fn(),
       deleteConversation: jest.fn(),
+      // 工作目录选择相关
+      showWorkspaceModal: false,
+      isCreatingConversation: false,
+      openWorkspaceModal: jest.fn(),
+      closeWorkspaceModal: jest.fn(),
+      createNewConversationWithWorkspace: jest.fn(),
     });
   });
 
