@@ -1,0 +1,136 @@
+# 未处理的 Bug 报告
+
+## Bug 1: chat_history 表缺少 conversation_id 列
+
+### 产生条件
+- 通过 WebSocket 发送消息时
+- 后端尝试将消息写入 chat_history 表时触发
+
+### 问题原因
+1. SQLAlchemy 模型 `ChatHistory` (`backend/models/user.py:86-110`) 定义了 `conversation_id` 字段
+2. 但数据库表 `chat_history` 缺少该列（创建表时未包含）
+3. 导致 SQL 插入语句失败：`table chat_history has no column named conversation_id`
+
+### 数据库现状
+```sql
+-- 现有表结构（缺少 conversation_id）
+CREATE TABLE chat_history (
+    id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    role VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    FOREIGN KEY(user_id) REFERENCES users (id)
+);
+```
+
+### 修改建议
+1. **临时修复**（已执行）：
+   ```sql
+   ALTER TABLE chat_history ADD COLUMN conversation_id INTEGER REFERENCES conversations(id);
+   ```
+
+2. **长期修复**：
+   - 使用 Alembic 进行数据库迁移管理
+   - 或在应用启动时检查并自动创建缺失的列
+
+---
+
+## Bug 2: 创建会话接口超时
+
+### 产生条件
+- 在前端聊天页面发送消息时
+- 当前没有选中任何会话（currentConversationId 为空）
+- 前端会先调用 `POST /api/conversations/` 创建新会话
+
+### 问题原因
+1. 后端 `ConversationService.create_conversation()` (`backend/services/conversation_service.py:50-90`) 在接收到 `first_message` 参数时
+2. 会调用 `generate_title_from_message()` (`backend/services/conversation_service.py:293-340`) 尝试用 iFlow AI 生成标题
+3. 这个过程需要连接 iFlow 服务并等待响应，有时很慢（超过 30 秒）
+4. 前端 axios 默认超时时间是 30 秒，导致超时错误：
+   ```
+   AxiosError: timeout of 30000ms exceeded
+   ```
+
+### 调用链路
+```
+前端 ChatContext.sendMessage()
+  → createNewConversation(content)
+    → apiService.createConversation({ first_message: content })
+      → POST /api/conversations/
+        → ConversationService.create_conversation(first_message=content)
+          → generate_title_from_message()  ← 耗时操作，可能超时
+```
+
+### 修改建议
+
+**方案 A：增加前端超时时间**
+```typescript
+// frontend/src/services/api.ts
+// 修改 axios 实例的超时配置
+this.api = axios.create({
+  baseURL: API_URL,
+  timeout: 120000, // 增加到 2 分钟
+  ...
+});
+```
+
+**方案 B：后端异步生成标题**
+```python
+# backend/services/conversation_service.py
+async def create_conversation(
+    self,
+    user_id: int,
+    title: Optional[str] = None,
+    first_message: Optional[str] = None,
+) -> Conversation:
+    # 立即创建会话，使用默认标题
+    if first_message and not title:
+        title = "新会话"  # 不在这里生成标题
+    
+    conversation = Conversation(user_id=user_id, title=title)
+    self.db.add(conversation)
+    await self.db.commit()
+    await self.db.refresh(conversation)
+    
+    # 异步更新标题（不阻塞返回）
+    if first_message and not title:
+        asyncio.create_task(self._update_title_async(conversation.id, first_message))
+    
+    return conversation
+
+async def _update_title_async(self, conversation_id: int, message: str):
+    """异步更新标题"""
+    try:
+        title = await self.generate_title_from_message(message)
+        # 更新数据库
+    except Exception:
+        pass  # 忽略失败
+```
+
+**方案 C：前端不传 first_message**
+```typescript
+// frontend/src/contexts/ChatContext.tsx
+const createNewConversation = useCallback(async (firstMessage?: string): Promise<ConversationResponse | null> => {
+  // 不传 first_message，让后端使用默认标题
+  const response = await apiService.createConversation({});
+  // ...
+}, [user]);
+```
+
+---
+
+## Bug 3: 前端会话创建失败后 WebSocket 断开
+
+### 产生条件
+- 创建会话接口失败后（超时或其他错误）
+- 前端显示"创建会话失败"错误
+- WebSocket 连接断开并尝试重连
+
+### 问题原因
+当前端创建会话失败时，错误被设置但 WebSocket 连接状态可能受到影响，导致连接断开。
+
+### 修改建议
+- 确保前端创建会话失败不影响 WebSocket 连接状态
+- 如果已有会话，直接使用已有会话发送消息，而不是中断流程

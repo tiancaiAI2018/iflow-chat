@@ -52,6 +52,7 @@ class ConversationService:
         user_id: int,
         title: Optional[str] = None,
         first_message: Optional[str] = None,
+        working_directory: Optional[str] = None,
     ) -> Conversation:
         """
         创建新会话
@@ -60,6 +61,7 @@ class ConversationService:
             user_id: 用户 ID
             title: 会话标题（可选）
             first_message: 首条消息（用于生成简单标题，不调用 AI）
+            working_directory: 工作目录（可选，默认为 /root/.iflow-bot/workspace）
         
         Returns:
             Conversation: 创建的会话对象
@@ -79,13 +81,14 @@ class ConversationService:
         conversation = Conversation(
             user_id=user_id,
             title=title,
+            working_directory=working_directory or "/root/.iflow-bot/workspace",
         )
         
         self.db.add(conversation)
         await self.db.commit()
         await self.db.refresh(conversation)
         
-        logger.info(f"Created conversation {conversation.id} for user {user_id}: {title}")
+        logger.info(f"Created conversation {conversation.id} for user {user_id}: {title}, working_directory={conversation.working_directory}")
         return conversation
     
     async def get_user_conversations(
@@ -352,6 +355,7 @@ class ConversationService:
         self,
         user_id: int,
         conversation_id: Optional[int] = None,
+        working_directory: Optional[str] = None,
     ) -> Conversation:
         """
         获取或创建会话
@@ -361,6 +365,7 @@ class ConversationService:
         Args:
             user_id: 用户 ID
             conversation_id: 会话 ID（可选）
+            working_directory: 工作目录（可选，创建新会话时使用）
         
         Returns:
             Conversation: 会话对象
@@ -371,7 +376,7 @@ class ConversationService:
                 return conversation
         
         # 创建新会话
-        return await self.create_conversation(user_id)
+        return await self.create_conversation(user_id, working_directory=working_directory)
 
 
 # 辅助函数

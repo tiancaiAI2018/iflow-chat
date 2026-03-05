@@ -423,6 +423,7 @@ async def handle_chat_message(
     db: AsyncSession,
     iflow_client: Optional[IFlowClientService],
     current_conversation_id: Optional[int] = None,
+    working_directory: Optional[str] = None,
 ) -> Tuple[Optional[int], Optional[IFlowClientService]]:
     """
     处理聊天消息
@@ -436,6 +437,7 @@ async def handle_chat_message(
         db: 数据库会话
         iflow_client: iFlow 客户端（可选）
         current_conversation_id: 当前会话 ID（可选）
+        working_directory: 工作目录（可选，创建新会话时使用）
     
     Returns:
         Tuple[Optional[int], Optional[IFlowClientService]]: (更新后的会话 ID, 更新后的 iFlow 客户端)
@@ -454,14 +456,24 @@ async def handle_chat_message(
             current_conversation_id = None
     
     if not current_conversation_id:
-        # 创建新会话
-        # 复用现有的 iflow_client 连接（如果存在且已连接）
-        # 如果 iflow_client 不存在或已断开，后续会创建新连接
+        # 创建新会话，使用指定的或默认的工作目录
+        effective_working_directory = working_directory or "/root/.iflow-bot/workspace"
+        
+        # 断开旧的 iflow_client 连接
+        if iflow_client is not None:
+            try:
+                await iflow_client.disconnect()
+                logger.info(f"Disconnected old iFlow client when creating new conversation")
+            except Exception as e:
+                logger.warning(f"Error disconnecting old iFlow client: {e}")
+            iflow_client = None
+        
         conversation = await conversation_service.create_conversation(
             user_id=user_id,
+            working_directory=effective_working_directory,
         )
         current_conversation_id = conversation.id
-        logger.info(f"Created new conversation {current_conversation_id} for user {user_id}")
+        logger.info(f"Created new conversation {current_conversation_id} for user {user_id} with working_directory={effective_working_directory}")
     
     # 保存用户消息到数据库
     user_msg = ChatHistory(
@@ -487,8 +499,12 @@ async def handle_chat_message(
     
     # 创建或重用 iFlow 客户端
     if iflow_client is None:
-        # 使用用户的 session_id 创建客户端（保持会话上下文）
-        iflow_client = IFlowClientService(session_id=user_session.session_id)
+        # 使用会话的工作目录创建客户端
+        cwd = conversation.working_directory if conversation else working_directory or "/root/.iflow-bot/workspace"
+        iflow_client = IFlowClientService(
+            cwd=cwd,
+            session_id=user_session.session_id,
+        )
         try:
             await iflow_client.connect()
             # 更新用户的 session_id
@@ -623,8 +639,8 @@ async def handle_switch_conversation(
     """
     处理切换会话
     
-    在同一个 WebSocket 连接内复用 iflow_client，避免频繁断开重连导致 MCP 进程累积。
-    只有在 iflow_client 为 None 或连接已断开时才创建新连接。
+    切换会话时会断开旧的 iflow_client 连接，并使用目标会话的 working_directory 创建新连接。
+    这确保每个会话使用正确的工作目录。
     
     Args:
         websocket: WebSocket 连接
@@ -653,41 +669,44 @@ async def handle_switch_conversation(
         )
         return current_conversation_id, iflow_client
     
-    # 复用现有连接（同一个 WebSocket 连接内）
-    if iflow_client is not None and iflow_client.is_connected:
-        logger.info(f"Reusing existing iFlow client connection")
-    else:
-        # 连接不存在或已断开，关闭旧连接并创建新连接
-        if iflow_client is not None:
-            try:
-                await iflow_client.disconnect()
-                logger.info(f"Closed disconnected iFlow client")
-            except Exception as e:
-                logger.warning(f"Error closing disconnected iFlow client: {e}")
-        
-        # 创建新的 iFlow 客户端
-        session_id = conversation.iflow_session_id if conversation.iflow_session_id else None
-        iflow_client = IFlowClientService(session_id=session_id)
+    # 获取会话的工作目录（如果为空则使用默认值）
+    working_directory = conversation.working_directory or "/root/.iflow-bot/workspace"
+    
+    # 断开旧的 iflow_client 连接
+    if iflow_client is not None:
         try:
-            await iflow_client.connect()
-            logger.info(f"Created new iFlow client with session_id={session_id}")
-            
-            # 如果会话没有 iflow_session_id，保存新的 session_id
-            if not conversation.iflow_session_id and iflow_client.session_id:
-                await conversation_service.update_conversation_iflow_session(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    iflow_session_id=iflow_client.session_id,
-                )
+            await iflow_client.disconnect()
+            logger.info(f"Disconnected old iFlow client when switching conversation")
         except Exception as e:
-            logger.error(f"Failed to create iFlow connection: {e}")
-            await websocket.send_json(
-                ErrorResponse(
-                    message="Failed to connect to AI service",
-                    code="IFLOW_ERROR"
-                ).model_dump()
+            logger.warning(f"Error disconnecting old iFlow client: {e}")
+        iflow_client = None
+    
+    # 使用会话的 working_directory 创建新的 iFlow 客户端
+    session_id = conversation.iflow_session_id if conversation.iflow_session_id else None
+    iflow_client = IFlowClientService(
+        cwd=working_directory,
+        session_id=session_id,
+    )
+    try:
+        await iflow_client.connect()
+        logger.info(f"Created new iFlow client with cwd={working_directory}, session_id={session_id}")
+        
+        # 如果会话没有 iflow_session_id，保存新的 session_id
+        if not conversation.iflow_session_id and iflow_client.session_id:
+            await conversation_service.update_conversation_iflow_session(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                iflow_session_id=iflow_client.session_id,
             )
-            return current_conversation_id, iflow_client
+    except Exception as e:
+        logger.error(f"Failed to create iFlow connection: {e}")
+        await websocket.send_json(
+            ErrorResponse(
+                message="Failed to connect to AI service",
+                code="IFLOW_ERROR"
+            ).model_dump()
+        )
+        return current_conversation_id, iflow_client
     
     # 发送切换成功响应
     await websocket.send_json(
@@ -698,7 +717,7 @@ async def handle_switch_conversation(
         ).model_dump()
     )
     
-    logger.info(f"Conversation switched: user_id={user_id}, conversation_id={conversation_id}")
+    logger.info(f"Conversation switched: user_id={user_id}, conversation_id={conversation_id}, working_directory={working_directory}")
     
     return conversation_id, iflow_client
 
