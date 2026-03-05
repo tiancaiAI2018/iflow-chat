@@ -175,8 +175,9 @@ class IFlowClientService:
                 self._record_success()  # 记录成功连接
                 
                 # 更新 session_id（首次连接时由服务器生成）
-                if hasattr(self._client, 'session_id') and self._client.session_id:
-                    self.session_id = self._client.session_id
+                # SDK 的 session_id 存储在 _session_id 属性中
+                if hasattr(self._client, '_session_id') and self._client._session_id:
+                    self.session_id = self._client._session_id
                     logger.info(f"Connected to iFlow service: {self.url}, session_id={self.session_id}")
                 else:
                     logger.info(f"Connected to iFlow service: {self.url}")

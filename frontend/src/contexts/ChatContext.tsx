@@ -120,13 +120,12 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
   }, [currentConversationId]);
 
   // 创建新会话
-  const createNewConversation = useCallback(async (firstMessage?: string): Promise<ConversationResponse | null> => {
+  const createNewConversation = useCallback(async (_firstMessage?: string): Promise<ConversationResponse | null> => {
     if (!user) return null;
     
     try {
-      const response = await apiService.createConversation(
-        firstMessage ? { first_message: firstMessage } : undefined
-      );
+      // 不传 first_message，让后端使用默认标题，确保快速返回
+      const response = await apiService.createConversation();
       
       const newConversation = response.conversation;
       
@@ -152,7 +151,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       return newConversation;
     } catch (err) {
       console.error('Failed to create conversation:', err);
-      setError('创建会话失败');
+      setError('创建会话失败，请稍后重试');
       return null;
     }
   }, [user]);
@@ -296,6 +295,10 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     }
   }, [onNotification, loadConversations]);
 
+  // 使用 ref 保存 currentConversationId，避免 connect 函数依赖变化导致 WebSocket 重建
+  const currentConversationIdRef = useRef(currentConversationId);
+  currentConversationIdRef.current = currentConversationId;
+
   // 连接 WebSocket
   const connect = useCallback(() => {
     if (!user) return;
@@ -307,19 +310,37 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       if (!mountedRef.current) return;
       setIsConnected(true);
       setError(null);
       reconnectCountRef.current = 0;
       console.log('WebSocket connected');
       
-      // 如果有当前会话，发送切换消息
-      if (currentConversationId) {
+      // 如果有当前会话，发送切换消息（使用 ref 获取最新值）
+      if (currentConversationIdRef.current) {
         ws.send(JSON.stringify({
           type: 'switch_conversation',
-          conversation_id: currentConversationId,
+          conversation_id: currentConversationIdRef.current,
         }));
+      } else {
+        // 没有当前会话时，自动创建新会话
+        try {
+          const response = await apiService.createConversation();
+          if (response?.conversation && mountedRef.current) {
+            const newConv = response.conversation;
+            setConversations(prev => [newConv, ...prev]);
+            setCurrentConversationId(newConv.id);
+            setMessages([]);
+            console.log('Auto created conversation:', newConv.id);
+          }
+        } catch (err) {
+          console.error('Failed to auto create conversation:', err);
+          if (mountedRef.current) {
+            setError('iFlow 未连接，请稍后重试');
+            setIsConnected(false);
+          }
+        }
       }
     };
 
@@ -348,7 +369,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
         setError('连接已断开，请刷新页面重试');
       }
     };
-  }, [user, handleWSMessage, currentConversationId]);
+  }, [user, handleWSMessage]);
 
   // 初始化连接和加载会话
   useEffect(() => {
@@ -374,8 +395,10 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
   // 发送消息
   const sendMessage = useCallback(async (content: string) => {
     if (!content.trim()) return;
+    
+    // 检查 WebSocket 连接状态
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      setError('WebSocket 未连接');
+      setError('WebSocket 未连接，正在重连...');
       return;
     }
 
@@ -385,12 +408,18 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     // 如果没有当前会话，先创建一个新会话
     let conversationIdToSend = currentConversationId;
     if (!conversationIdToSend) {
-      const newConv = await createNewConversation(content);
-      if (!newConv) {
-        setError('创建会话失败');
+      try {
+        const newConv = await createNewConversation();
+        if (!newConv) {
+          setError('创建会话失败，请刷新页面重试');
+          return;
+        }
+        conversationIdToSend = newConv.id;
+      } catch (err) {
+        console.error('Error creating conversation:', err);
+        setError('创建会话失败，请稍后重试');
         return;
       }
-      conversationIdToSend = newConv.id;
     }
 
     // 添加用户消息到列表
@@ -403,14 +432,17 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     setMessages((prev) => [...prev, userMessage]);
 
     // 通过 WebSocket 发送
-    wsRef.current.send(JSON.stringify({
-      type: 'chat',
-      content,
-      conversation_id: conversationIdToSend,
-    }));
-
-    setIsWaiting(true);
-    setIsStreaming(true);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'chat',
+        content,
+        conversation_id: conversationIdToSend,
+      }));
+      setIsWaiting(true);
+      setIsStreaming(true);
+    } else {
+      setError('连接已断开，请刷新页面重试');
+    }
   }, [currentConversationId, createNewConversation]);
 
   // 清空消息（保留用于清空当前显示）

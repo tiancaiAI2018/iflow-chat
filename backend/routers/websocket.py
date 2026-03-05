@@ -345,9 +345,13 @@ async def websocket_endpoint(
         # 清理资源
         user_id_result = await manager.disconnect(connection_id)
         
-        # 如果用户没有连接了，不立即清理 session（保留一段时间以便重连）
-        # 可以通过定时任务清理不活跃的 session
-        # 这里暂时不清理，让 session 保持
+        # 关闭 iflow_client 连接（WebSocket 断开时）
+        if iflow_client is not None:
+            try:
+                await iflow_client.disconnect()
+                logger.info(f"Closed iFlow client when WebSocket disconnected")
+            except Exception as e:
+                logger.warning(f"Error closing iFlow client: {e}")
         
         # 关闭数据库会话
         try:
@@ -440,6 +444,7 @@ async def handle_chat_message(
     
     # 获取或创建会话
     conversation_service = ConversationService(db)
+    conversation = None
     
     if current_conversation_id:
         # 验证会话存在且属于该用户
@@ -449,10 +454,11 @@ async def handle_chat_message(
             current_conversation_id = None
     
     if not current_conversation_id:
-        # 创建新会话（AI 生成标题）
+        # 创建新会话
+        # 复用现有的 iflow_client 连接（如果存在且已连接）
+        # 如果 iflow_client 不存在或已断开，后续会创建新连接
         conversation = await conversation_service.create_conversation(
             user_id=user_id,
-            first_message=content,
         )
         current_conversation_id = conversation.id
         logger.info(f"Created new conversation {current_conversation_id} for user {user_id}")
@@ -466,6 +472,15 @@ async def handle_chat_message(
     )
     db.add(user_msg)
     await db.commit()
+    
+    # 如果会话标题是"新会话"，自动更新为用户消息的前20字符
+    if conversation and conversation.title == "新会话":
+        new_title = content[:20]
+        if len(content) > 20:
+            new_title += "..."
+        conversation.title = new_title
+        await db.commit()
+        logger.info(f"Auto updated conversation {current_conversation_id} title to: {new_title}")
     
     # 获取用户的 session 信息
     user_session = manager.get_or_create_user_session(user_id)
@@ -608,6 +623,9 @@ async def handle_switch_conversation(
     """
     处理切换会话
     
+    在同一个 WebSocket 连接内复用 iflow_client，避免频繁断开重连导致 MCP 进程累积。
+    只有在 iflow_client 为 None 或连接已断开时才创建新连接。
+    
     Args:
         websocket: WebSocket 连接
         manager: WebSocket 管理器
@@ -635,37 +653,27 @@ async def handle_switch_conversation(
         )
         return current_conversation_id, iflow_client
     
-    # 如果会话有 iflow_session_id，尝试恢复 iFlow 会话
-    if conversation.iflow_session_id:
-        # 创建新的 iFlow 客户端并设置 session_id
-        new_iflow_client = IFlowClientService(session_id=conversation.iflow_session_id)
-        try:
-            await new_iflow_client.connect()
-            iflow_client = new_iflow_client
-            logger.info(f"Restored iFlow session: {conversation.iflow_session_id}")
-        except Exception as e:
-            logger.warning(f"Failed to restore iFlow session: {e}")
-            # 继续切换，只是无法恢复上下文
-            # 创建新的 iFlow 客户端
-            iflow_client = IFlowClientService()
-            try:
-                await iflow_client.connect()
-            except Exception as e2:
-                logger.error(f"Failed to create new iFlow connection: {e2}")
-                await websocket.send_json(
-                    ErrorResponse(
-                        message="Failed to connect to AI service",
-                        code="IFLOW_ERROR"
-                    ).model_dump()
-                )
-                return current_conversation_id, iflow_client
+    # 复用现有连接（同一个 WebSocket 连接内）
+    if iflow_client is not None and iflow_client.is_connected:
+        logger.info(f"Reusing existing iFlow client connection")
     else:
-        # 会话没有 iflow_session_id，创建新的 iFlow 客户端
-        iflow_client = IFlowClientService()
+        # 连接不存在或已断开，关闭旧连接并创建新连接
+        if iflow_client is not None:
+            try:
+                await iflow_client.disconnect()
+                logger.info(f"Closed disconnected iFlow client")
+            except Exception as e:
+                logger.warning(f"Error closing disconnected iFlow client: {e}")
+        
+        # 创建新的 iFlow 客户端
+        session_id = conversation.iflow_session_id if conversation.iflow_session_id else None
+        iflow_client = IFlowClientService(session_id=session_id)
         try:
             await iflow_client.connect()
-            # 保存新的 session_id 到会话
-            if iflow_client.session_id:
+            logger.info(f"Created new iFlow client with session_id={session_id}")
+            
+            # 如果会话没有 iflow_session_id，保存新的 session_id
+            if not conversation.iflow_session_id and iflow_client.session_id:
                 await conversation_service.update_conversation_iflow_session(
                     conversation_id=conversation_id,
                     user_id=user_id,

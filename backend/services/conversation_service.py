@@ -58,16 +58,21 @@ class ConversationService:
         
         Args:
             user_id: 用户 ID
-            title: 会话标题（可选，如果提供 first_message 则由 AI 生成）
-            first_message: 首条消息（用于 AI 生成标题）
+            title: 会话标题（可选）
+            first_message: 首条消息（用于生成简单标题，不调用 AI）
         
         Returns:
             Conversation: 创建的会话对象
         """
-        # 如果提供了首条消息且没有标题，使用 AI 生成标题
-        if first_message and not title:
-            title = await self.generate_title_from_message(first_message)
-        elif not title:
+        # 生成标题：优先使用传入的标题，其次用首条消息截取，最后使用默认值
+        if title:
+            pass  # 使用传入的标题
+        elif first_message:
+            # 截取消息前 20 字符作为标题，不调用 AI
+            title = first_message[:20]
+            if len(first_message) > 20:
+                title += "..."
+        else:
             title = "新会话"
         
         # 创建会话
