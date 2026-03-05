@@ -69,7 +69,7 @@ class TestIFlowClientServiceInit:
     def test_default_init(self):
         """测试默认初始化"""
         client = IFlowClientService()
-        assert client.url == "ws://localhost:8090/acp"
+        assert client.cwd == "/root/.iflow-bot/workspace"
         assert client.timeout == 300.0
         assert client._client is None
         assert client._is_connected is False
@@ -77,11 +77,35 @@ class TestIFlowClientServiceInit:
     def test_custom_init(self):
         """测试自定义参数初始化"""
         client = IFlowClientService(
-            url="ws://custom:8080/acp",
+            cwd="/custom/path",
             timeout=60.0,
         )
-        assert client.url == "ws://custom:8080/acp"
+        assert client.cwd == "/custom/path"
         assert client.timeout == 60.0
+
+    # ============= feat-002: cwd 参数测试 =============
+
+    def test_cwd_default_value(self):
+        """测试 cwd 参数默认值"""
+        client = IFlowClientService()
+        assert client.cwd == "/root/.iflow-bot/workspace"
+
+    def test_cwd_custom_value(self):
+        """测试 cwd 参数自定义值"""
+        custom_cwd = "/root/.iflow-bot/workspace/mybot"
+        client = IFlowClientService(cwd=custom_cwd)
+        assert client.cwd == custom_cwd
+
+    def test_cwd_with_other_params(self):
+        """测试 cwd 参数与其他参数组合"""
+        client = IFlowClientService(
+            cwd="/custom/path",
+            timeout=120.0,
+            session_id="test-session"
+        )
+        assert client.cwd == "/custom/path"
+        assert client.timeout == 120.0
+        assert client.session_id == "test-session"
 
 
 class TestIFlowClientServiceConnection:
@@ -154,6 +178,88 @@ class TestIFlowClientServiceConnection:
             # 重新连接
             await client.reconnect()
             assert client.is_connected is True
+
+    # ============= feat-002: auto_start_process 和 cwd 连接测试 =============
+
+    @pytest.mark.asyncio
+    async def test_connect_with_cwd_auto_start(self):
+        """测试使用 cwd 和 auto_start_process 模式连接"""
+        custom_cwd = "/root/.iflow-bot/workspace/mybot"
+        client = IFlowClientService(cwd=custom_cwd)
+        
+        # Mock SDK client
+        mock_sdk_client = AsyncMock()
+        mock_sdk_client.__aenter__ = AsyncMock(return_value=mock_sdk_client)
+        mock_sdk_client._session_id = "test-session-123"
+        
+        # 捕获传递给 SDKClient 的 options
+        captured_options = None
+        
+        def capture_options(options):
+            nonlocal captured_options
+            captured_options = options
+            return mock_sdk_client
+        
+        with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
+            await client.connect()
+            
+            # 验证 IFlowOptions 参数
+            assert captured_options is not None
+            assert captured_options.auto_start_process is True
+            assert captured_options.cwd == custom_cwd
+    
+    @pytest.mark.asyncio
+    async def test_connect_options_no_url(self):
+        """测试连接时 IFlowOptions 不指定 url（使用默认）"""
+        client = IFlowClientService(cwd="/custom/path")
+        
+        # Mock SDK client
+        mock_sdk_client = AsyncMock()
+        mock_sdk_client.__aenter__ = AsyncMock(return_value=mock_sdk_client)
+        
+        # 捕获传递给 SDKClient 的 options
+        captured_options = None
+        
+        def capture_options(options):
+            nonlocal captured_options
+            captured_options = options
+            return mock_sdk_client
+        
+        with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
+            await client.connect()
+            
+            # 验证 IFlowOptions 参数
+            assert captured_options is not None
+            assert captured_options.cwd == "/custom/path"
+            # auto_start_process 应该为 True
+            assert captured_options.auto_start_process is True
+
+    @pytest.mark.asyncio
+    async def test_connect_with_session_id(self):
+        """测试连接时传递 session_id"""
+        client = IFlowClientService(
+            cwd="/custom/path",
+            session_id="existing-session-456"
+        )
+        
+        # Mock SDK client
+        mock_sdk_client = AsyncMock()
+        mock_sdk_client.__aenter__ = AsyncMock(return_value=mock_sdk_client)
+        
+        # 捕获传递给 SDKClient 的 options
+        captured_options = None
+        
+        def capture_options(options):
+            nonlocal captured_options
+            captured_options = options
+            return mock_sdk_client
+        
+        with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
+            await client.connect()
+            
+            # 验证 IFlowOptions 包含 session_id
+            assert captured_options is not None
+            assert captured_options.session_id == "existing-session-456"
 
 
 class TestIFlowClientServiceQuery:

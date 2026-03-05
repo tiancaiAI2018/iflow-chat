@@ -115,7 +115,7 @@ class IFlowClientService:
     
     def __init__(
         self,
-        url: Optional[str] = None,
+        cwd: Optional[str] = None,
         timeout: Optional[float] = None,
         max_reconnect_attempts: int = 5,
         reconnect_base_delay: float = 1.0,
@@ -126,14 +126,14 @@ class IFlowClientService:
         初始化 iFlow 客户端服务
         
         Args:
-            url: WebSocket 地址，默认使用配置中的地址
+            cwd: 工作目录，默认为 /root/.iflow-bot/workspace
             timeout: 超时时间（秒），默认使用配置中的超时时间
             max_reconnect_attempts: 最大重连尝试次数
             reconnect_base_delay: 重连基础延迟（秒）
             health_check_interval: 健康检查间隔（秒）
             session_id: iFlow 会话 ID，用于保持会话上下文
         """
-        self.url = url or settings.IFLOW_WS_URL
+        self.cwd = cwd or "/root/.iflow-bot/workspace"
         self.timeout = timeout or settings.IFLOW_TIMEOUT
         self.max_reconnect_attempts = max_reconnect_attempts
         self.reconnect_base_delay = reconnect_base_delay
@@ -151,6 +151,7 @@ class IFlowClientService:
     async def connect(self) -> None:
         """
         建立 WebSocket 连接
+        使用 auto_start_process=True 让 iFlow SDK 自动管理进程
         支持自动重试
         """
         if self._is_connected and self._client:
@@ -158,8 +159,8 @@ class IFlowClientService:
             return
         
         self._options = IFlowOptions(
-            url=self.url,
-            auto_start_process=False,  # 手动模式，连接已有服务
+            auto_start_process=True,  # 自动管理模式，让 SDK 启动和管理进程
+            cwd=self.cwd,             # 工作目录
             timeout=self.timeout,
             session_id=self.session_id,  # 传入 session_id 保持会话上下文
         )
@@ -178,9 +179,9 @@ class IFlowClientService:
                 # SDK 的 session_id 存储在 _session_id 属性中
                 if hasattr(self._client, '_session_id') and self._client._session_id:
                     self.session_id = self._client._session_id
-                    logger.info(f"Connected to iFlow service: {self.url}, session_id={self.session_id}")
+                    logger.info(f"Connected to iFlow service with cwd={self.cwd}, session_id={self.session_id}")
                 else:
-                    logger.info(f"Connected to iFlow service: {self.url}")
+                    logger.info(f"Connected to iFlow service with cwd={self.cwd}")
                 return
             except Exception as e:
                 last_error = e
@@ -259,7 +260,7 @@ class IFlowClientService:
         return {
             "is_connected": self.is_connected,
             "is_service_available": self._is_service_available,
-            "url": self.url,
+            "cwd": self.cwd,
             "last_connect_time": self._last_connect_time.isoformat() if self._last_connect_time else None,
             "error_count": len(self._connection_errors),
             "consecutive_failures": self._consecutive_failures,
