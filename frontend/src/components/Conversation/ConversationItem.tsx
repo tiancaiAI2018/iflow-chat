@@ -20,6 +20,13 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   const [isLongPress, setIsLongPress] = useState(false);
   const longPressTimer = useRef<NodeJS.Timeout | null>(null);
 
+  // 从工作目录路径中提取最后一级目录名
+  const getWorkingDirectoryName = (path: string): string => {
+    if (!path) return 'workspace';
+    const parts = path.split('/').filter(Boolean);
+    return parts[parts.length - 1] || 'workspace';
+  };
+
   // 长按显示删除按钮
   const handleTouchStart = () => {
     longPressTimer.current = setTimeout(() => {
@@ -59,6 +66,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
       <div className="conversation-item-content" onClick={onSelect}>
         <div className="conversation-title">{conversation.title || '新对话'}</div>
         <div className="conversation-meta">
+          <span className="conversation-workspace">📁 {getWorkingDirectoryName(conversation.working_directory)}</span>
           <span className="conversation-time">{formatTime(conversation.updated_at)}</span>
         </div>
       </div>
