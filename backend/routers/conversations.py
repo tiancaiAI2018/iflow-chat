@@ -73,7 +73,7 @@ async def get_conversations(
         401: {"model": ErrorResponse},
     },
     summary="创建新会话",
-    description="创建新会话，可选择性地提供首条消息用于生成标题"
+    description="创建新会话，可选择性地提供首条消息用于生成标题和工作目录"
 )
 async def create_conversation(
     data: Optional[ConversationCreate] = None,
@@ -85,6 +85,7 @@ async def create_conversation(
     
     - **title**: 会话标题（可选，默认'新会话'）
     - **first_message**: 首条消息（可选，用于生成标题）
+    - **working_directory**: 工作目录（可选，默认'/root/.iflow-bot/workspace'）
     
     如果提供 first_message 且未提供 title，将截取消息前20字符作为标题
     """
@@ -93,11 +94,13 @@ async def create_conversation(
     # 处理空请求体
     title = data.title if data else None
     first_message = data.first_message if data else None
+    working_directory = data.working_directory if data else None
     
     conversation = await service.create_conversation(
         user_id=current_user.id,
         title=title,
         first_message=first_message,
+        working_directory=working_directory,
     )
     
     return ConversationDetailResponse(

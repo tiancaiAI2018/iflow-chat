@@ -310,6 +310,99 @@ async def test_create_conversation_unauthorized(client):
     assert response.status_code == 401
 
 
+# ==================== 创建会话工作目录测试 ====================
+
+@pytest.mark.asyncio
+async def test_create_conversation_with_working_directory(client, test_user):
+    """测试创建会话时指定工作目录"""
+    token = create_access_token({"sub": test_user.id, "username": test_user.username})
+    
+    response = await client.post(
+        "/api/conversations/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "title": "指定工作目录的会话",
+            "working_directory": "/root/.iflow-bot/workspace/mybot"
+        }
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["conversation"]["title"] == "指定工作目录的会话"
+    assert data["conversation"]["working_directory"] == "/root/.iflow-bot/workspace/mybot"
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_default_working_directory(client, test_user):
+    """测试创建会话使用默认工作目录"""
+    token = create_access_token({"sub": test_user.id, "username": test_user.username})
+    
+    response = await client.post(
+        "/api/conversations/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"title": "默认工作目录会话"}
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["conversation"]["working_directory"] == "/root/.iflow-bot/workspace"
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_empty_working_directory(client, test_user):
+    """测试创建会话时工作目录为空字符串，应使用默认值"""
+    token = create_access_token({"sub": test_user.id, "username": test_user.username})
+    
+    response = await client.post(
+        "/api/conversations/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "title": "空工作目录会话",
+            "working_directory": ""
+        }
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    # 空字符串会被服务层替换为默认值
+    assert data["conversation"]["working_directory"] == "/root/.iflow-bot/workspace"
+
+
+@pytest.mark.asyncio
+async def test_conversation_response_includes_working_directory(client, test_user, test_conversation):
+    """测试会话响应包含工作目录字段"""
+    token = create_access_token({"sub": test_user.id, "username": test_user.username})
+    
+    response = await client.get(
+        f"/api/conversations/{test_conversation.id}",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert "working_directory" in data["conversation"]
+    assert data["conversation"]["working_directory"] is not None
+
+
+@pytest.mark.asyncio
+async def test_conversation_list_includes_working_directory(client, test_user, test_conversations):
+    """测试会话列表中每个会话都包含工作目录字段"""
+    token = create_access_token({"sub": test_user.id, "username": test_user.username})
+    
+    response = await client.get(
+        "/api/conversations/",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    for conv in data["conversations"]:
+        assert "working_directory" in conv
+        assert conv["working_directory"] is not None
+
+
 # ==================== 获取会话详情测试 ====================
 
 @pytest.mark.asyncio

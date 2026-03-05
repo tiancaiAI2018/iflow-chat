@@ -191,6 +191,7 @@ class ConversationCreate(BaseModel):
     """创建会话请求模型"""
     title: Optional[str] = Field(None, max_length=255, description="会话标题（可选，默认'新会话'）")
     first_message: Optional[str] = Field(None, max_length=2000, description="首条消息（用于 AI 生成标题）")
+    working_directory: Optional[str] = Field(None, max_length=500, description="工作目录（可选，默认'/root/.iflow-bot/workspace'）")
 
 
 class ConversationResponse(BaseModel):
@@ -199,6 +200,7 @@ class ConversationResponse(BaseModel):
     user_id: int
     title: str
     iflow_session_id: Optional[str] = None
+    working_directory: str = "/root/.iflow-bot/workspace"
     created_at: datetime
     updated_at: datetime
 

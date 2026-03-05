@@ -396,6 +396,7 @@ def conversation_to_response(conversation: Conversation) -> ConversationResponse
         user_id=conversation.user_id,
         title=conversation.title,
         iflow_session_id=conversation.iflow_session_id,
+        working_directory=conversation.working_directory or "/root/.iflow-bot/workspace",
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )
