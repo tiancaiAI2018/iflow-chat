@@ -209,6 +209,48 @@ class ApiService {
     const token = localStorage.getItem('token');
     return `${wsProtocol}//${wsHost}/ws/${userId}?token=${token}`;
   }
+
+  // ========== 待消费消息（断线重连恢复） ==========
+
+  /**
+   * 获取待消费消息（用于 WebSocket 断线重连后恢复）
+   */
+  async getPendingMessages(count: number = 50): Promise<{
+    success: boolean;
+    messages: Array<{
+      entry_id: string;
+      type: string;
+      content: string;
+      is_delta?: boolean;
+      conversation_id?: number;
+      created_at?: string;
+    }>;
+    count: number;
+    message: string;
+  }> {
+    const response = await this.api.get('/messages/pending', { params: { count } });
+    return response.data;
+  }
+
+  /**
+   * 消费待推送消息（读取后删除）
+   */
+  async consumeMessages(count: number = 10): Promise<{
+    success: boolean;
+    messages: Array<{
+      entry_id: string;
+      type: string;
+      content: string;
+      is_delta?: boolean;
+      conversation_id?: number;
+      created_at?: string;
+    }>;
+    count: number;
+    message: string;
+  }> {
+    const response = await this.api.post('/messages/consume', null, { params: { count } });
+    return response.data;
+  }
 }
 
 // 导出单例

@@ -350,9 +350,66 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       if (!mountedRef.current) return;
       setIsConnected(true);
       setError(null);
+
+      const isReconnect = reconnectCountRef.current > 0;
+      console.log(`WebSocket connected (reconnect: ${isReconnect})`);
+
+      // 如果是重连，尝试从 API 获取未消费的消息
+      if (isReconnect) {
+        try {
+          console.log('Fetching pending messages after reconnect...');
+          const response = await apiService.getPendingMessages(50);
+
+          if (response.success && response.messages.length > 0) {
+            console.log(`Recovered ${response.messages.length} pending messages`);
+
+            // 处理恢复的消息
+            let accumulatedContent = '';
+
+            for (const msg of response.messages) {
+              if (msg.type === 'stream') {
+                // 流式消息：累积内容
+                accumulatedContent += msg.content;
+
+                // 如果有 conversation_id，切换到对应会话
+                if (msg.conversation_id && msg.conversation_id !== currentConversationIdRef.current) {
+                  setCurrentConversationId(msg.conversation_id);
+                  // 发送切换会话消息
+                  ws.send(JSON.stringify({
+                    type: 'switch_conversation',
+                    conversation_id: msg.conversation_id,
+                  }));
+                }
+              } else if (msg.type === 'complete') {
+                // 完整消息：显示为 assistant 消息
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: `recovered-${Date.now()}-${Math.random()}`,
+                    role: 'assistant',
+                    content: accumulatedContent || msg.content,
+                    created_at: msg.created_at || new Date().toISOString(),
+                  },
+                ]);
+                accumulatedContent = '';
+              }
+            }
+
+            // 如果还有未完成的流式内容，显示为正在流式输出
+            if (accumulatedContent) {
+              streamingContentRef.current = accumulatedContent;
+              setCurrentAssistantMessage(accumulatedContent);
+              setIsStreaming(true);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to fetch pending messages:', err);
+          // 即使获取失败，也继续正常连接
+        }
+      }
+
       reconnectCountRef.current = 0;
-      console.log('WebSocket connected');
-      
+
       // 如果有当前会话，发送切换消息（使用 ref 获取最新值）
       if (currentConversationIdRef.current) {
         ws.send(JSON.stringify({

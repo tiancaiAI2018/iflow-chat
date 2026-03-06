@@ -251,5 +251,25 @@ class ConversationDeleteResponse(BaseModel):
     message: str = "会话删除成功"
 
 
+# ==================== 待消费消息相关 ====================
+
+class PendingMessageItem(BaseModel):
+    """待消费消息项模型"""
+    entry_id: str = Field(..., description="Redis Stream entry ID")
+    type: str = Field(..., description="消息类型：stream/complete")
+    content: str = Field(..., description="消息内容")
+    is_delta: Optional[bool] = Field(None, description="是否为增量消息（仅 stream 类型）")
+    conversation_id: Optional[int] = Field(None, description="会话 ID")
+    created_at: Optional[str] = Field(None, description="消息创建时间")
+
+
+class PendingMessagesResponse(BaseModel):
+    """待消费消息响应模型"""
+    success: bool = True
+    messages: list[PendingMessageItem] = []
+    count: int = 0
+    message: str = "获取成功"
+
+
 # 更新 forward reference
 ConversationDetailResponse.model_rebuild()

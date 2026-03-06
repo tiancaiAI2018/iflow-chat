@@ -151,7 +151,7 @@ async def health():
 
 
 # 导入并注册路由
-from backend.routers import auth, websocket, chat, tasks, notifications, conversations, directories
+from backend.routers import auth, websocket, chat, tasks, notifications, conversations, directories, messages
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(websocket.router, tags=["websocket"])
@@ -160,6 +160,7 @@ app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
 app.include_router(conversations.router, prefix="/api/conversations", tags=["conversations"])
 app.include_router(directories.router, prefix="/api/directories", tags=["directories"])
+app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 
 
 # ============ 获取全局资源的辅助函数 ============
