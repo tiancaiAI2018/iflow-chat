@@ -42,6 +42,7 @@ const Chat: React.FC<ChatProps> = ({
     // 工作目录选择相关
     showWorkspaceModal,
     isCreatingConversation,
+    openWorkspaceModal,
     closeWorkspaceModal,
     createNewConversationWithWorkspace,
   } = useChatContext();
@@ -60,6 +61,17 @@ const Chat: React.FC<ChatProps> = ({
   useEffect(() => {
     setConnectionStatus(isConnected ? 'connected' : 'connecting');
   }, [isConnected]);
+
+  // 连接成功但没有当前会话时，自动弹出工作目录选择对话框
+  useEffect(() => {
+    if (isConnected && !currentConversationId && !showWorkspaceModal && conversations.length === 0) {
+      // 延迟一点弹出，避免页面加载时的闪烁
+      const timer = setTimeout(() => {
+        openWorkspaceModal();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [isConnected, currentConversationId, showWorkspaceModal, conversations.length, openWorkspaceModal]);
 
   // 处理发送消息（Context 内部会自动关联到当前会话，无会话时自动创建）
   const handleSend = (content: string) => {

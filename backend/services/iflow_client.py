@@ -7,6 +7,9 @@ import asyncio
 import logging
 import json
 import re
+import os
+import socket
+import hashlib
 from typing import AsyncGenerator, Optional, Callable, Any, Dict
 from dataclasses import dataclass
 from enum import Enum
@@ -27,6 +30,84 @@ from iflow_sdk.types import ToolResultMessage
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== 端口管理 ====================
+
+# 基础端口，用于 mybot 目录（已有进程）
+BASE_PORT = 8090
+# 动态端口范围起始
+DYNAMIC_PORT_START = 8091
+DYNAMIC_PORT_END = 8100
+
+# 工作目录到端口的映射
+_cwd_port_map: Dict[str, int] = {}
+# 已使用的端口集合
+_used_ports: set = {BASE_PORT}  # 8090 已被 mybot 进程占用
+
+# 全局锁，用于保护 os.chdir 操作（进程级全局状态）
+_cwd_lock = asyncio.Lock()
+
+
+def _get_port_for_cwd(cwd: str) -> int:
+    """
+    根据工作目录获取对应的端口
+    
+    对于 mybot 目录使用固定的 8090 端口（已有进程）
+    对于其他目录，根据目录路径哈希分配动态端口
+    
+    Args:
+        cwd: 工作目录路径
+    
+    Returns:
+        int: 分配的端口号
+    """
+    global _cwd_port_map, _used_ports
+    
+    # 标准化路径
+    normalized_cwd = os.path.abspath(cwd)
+    
+    # 如果是 mybot 目录，使用基础端口
+    if normalized_cwd.endswith('/mybot') or normalized_cwd == '/root/.iflow-bot/workspace/mybot':
+        return BASE_PORT
+    
+    # 如果已经映射过，直接返回
+    if normalized_cwd in _cwd_port_map:
+        return _cwd_port_map[normalized_cwd]
+    
+    # 根据路径哈希分配端口
+    hash_val = int(hashlib.md5(normalized_cwd.encode()).hexdigest(), 16)
+    
+    # 在动态端口范围内查找可用端口
+    for offset in range(DYNAMIC_PORT_END - DYNAMIC_PORT_START + 1):
+        port = DYNAMIC_PORT_START + (hash_val + offset) % (DYNAMIC_PORT_END - DYNAMIC_PORT_START + 1)
+        if port not in _used_ports:
+            _cwd_port_map[normalized_cwd] = port
+            _used_ports.add(port)
+            logger.info(f"Assigned port {port} for working directory: {normalized_cwd}")
+            return port
+    
+    # 如果所有端口都被占用，抛出异常
+    raise RuntimeError(f"No available ports for working directory: {normalized_cwd}")
+
+
+def _is_port_available(port: int) -> bool:
+    """
+    检查端口是否可用（未被占用）
+    
+    Args:
+        port: 端口号
+    
+    Returns:
+        bool: 是否可用
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            result = s.connect_ex(('localhost', port))
+            return result != 0  # 如果连接失败（端口未被占用），返回 True
+    except Exception:
+        return False
 
 
 # ==================== 系统提示词 ====================
@@ -147,29 +228,62 @@ class IFlowClientService:
         self._is_service_available = True  # 服务可用性标志
         self._consecutive_failures = 0  # 连续失败次数
         self._service_unavailable_threshold = 3  # 判定服务不可用的连续失败阈值
+        
+        # 根据工作目录分配端口
+        self._port = _get_port_for_cwd(self.cwd)
+        self._url = f"ws://localhost:{self._port}/acp"
     
     async def connect(self) -> None:
         """
         建立 WebSocket 连接
         使用 auto_start_process=True 让 iFlow SDK 自动管理进程
         支持自动重试
+        
+        注意：由于 os.chdir 是进程级全局操作，使用 _cwd_lock 锁保护以避免并发问题
         """
         if self._is_connected and self._client:
             logger.debug("Already connected to iFlow service")
             return
         
+        # 检查端口是否已被其他进程占用（非 iFlow 进程）
+        if self._port != BASE_PORT and not _is_port_available(self._port):
+            # 端口被占用，尝试重新分配
+            logger.warning(f"Port {self._port} is already in use, trying to reassign...")
+            global _used_ports, _cwd_port_map
+            _used_ports.discard(self._port)
+            del _cwd_port_map[self.cwd]
+            self._port = _get_port_for_cwd(self.cwd)
+            self._url = f"ws://localhost:{self._port}/acp"
+        
         self._options = IFlowOptions(
+            url=self._url,            # 使用动态 URL（包含端口）
             auto_start_process=True,  # 自动管理模式，让 SDK 启动和管理进程
-            cwd=self.cwd,             # 工作目录
+            cwd=self.cwd,             # 工作目录（传给 iflow session）
             timeout=self.timeout,
             session_id=self.session_id,  # 传入 session_id 保持会话上下文
+            process_start_port=self._port,  # 指定启动端口
         )
         
         last_error = None
         for attempt in range(self.max_reconnect_attempts):
             try:
-                self._client = SDKClient(options=self._options)
-                await self._client.__aenter__()
+                # 使用全局锁保护目录切换操作（进程级全局状态）
+                async with _cwd_lock:
+                    # 保存原来的工作目录
+                    original_cwd = os.getcwd()
+                    try:
+                        # 切换到目标工作目录（iflow ACP 进程将在此目录启动）
+                        os.chdir(self.cwd)
+                        logger.debug(f"Changed working directory to: {self.cwd}")
+                        
+                        # 创建并连接 SDKClient
+                        self._client = SDKClient(options=self._options)
+                        await self._client.__aenter__()
+                    finally:
+                        # 恢复原来的工作目录
+                        os.chdir(original_cwd)
+                        logger.debug(f"Restored working directory to: {original_cwd}")
+                
                 self._is_connected = True
                 self._last_connect_time = datetime.now()
                 self._connection_errors = []  # 清空错误历史
@@ -179,9 +293,9 @@ class IFlowClientService:
                 # SDK 的 session_id 存储在 _session_id 属性中
                 if hasattr(self._client, '_session_id') and self._client._session_id:
                     self.session_id = self._client._session_id
-                    logger.info(f"Connected to iFlow service with cwd={self.cwd}, session_id={self.session_id}")
+                    logger.info(f"Connected to iFlow service with cwd={self.cwd}, port={self._port}, session_id={self.session_id}")
                 else:
-                    logger.info(f"Connected to iFlow service with cwd={self.cwd}")
+                    logger.info(f"Connected to iFlow service with cwd={self.cwd}, port={self._port}")
                 return
             except Exception as e:
                 last_error = e
@@ -261,6 +375,8 @@ class IFlowClientService:
             "is_connected": self.is_connected,
             "is_service_available": self._is_service_available,
             "cwd": self.cwd,
+            "port": getattr(self, '_port', BASE_PORT),
+            "url": getattr(self, '_url', f"ws://localhost:{BASE_PORT}/acp"),
             "last_connect_time": self._last_connect_time.isoformat() if self._last_connect_time else None,
             "error_count": len(self._connection_errors),
             "consecutive_failures": self._consecutive_failures,

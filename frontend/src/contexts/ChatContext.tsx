@@ -359,25 +359,8 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
           type: 'switch_conversation',
           conversation_id: currentConversationIdRef.current,
         }));
-      } else {
-        // 没有当前会话时，自动创建新会话（使用默认工作目录）
-        try {
-          const response = await apiService.createConversation({ working_directory: '/root/.iflow-bot/workspace' });
-          if (response?.conversation && mountedRef.current) {
-            const newConv = response.conversation;
-            setConversations(prev => [newConv, ...prev]);
-            setCurrentConversationId(newConv.id);
-            setMessages([]);
-            console.log('Auto created conversation:', newConv.id);
-          }
-        } catch (err) {
-          console.error('Failed to auto create conversation:', err);
-          if (mountedRef.current) {
-            setError('iFlow 未连接，请稍后重试');
-            setIsConnected(false);
-          }
-        }
       }
+      // 没有当前会话时，不自动创建，而是让页面弹出工作目录选择对话框
     };
 
     ws.onmessage = handleWSMessage;

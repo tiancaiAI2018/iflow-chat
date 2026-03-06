@@ -39,8 +39,8 @@ body {
 .app-layout {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  min-height: -webkit-fill-available;
+  height: 100vh;
+  height: -webkit-fill-available;
 }
 
 /* 主内容区 */
@@ -50,6 +50,7 @@ body {
   flex-direction: column;
   overflow: hidden;
   position: relative;
+  min-height: 0;
 }
 
 /* 占位页面 */
