@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # 数据库配置
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/app.db"
     
+    # Redis 配置
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_MAX_MEMORY: str = "32mb"  # Redis 最大内存限制
+    REDIS_MESSAGE_TTL: int = 300  # 消息保留时间（秒），默认 5 分钟
+    
     # 数据目录
     DATA_DIR: str = "./data"
     TASKS_DIR: str = "./data/tasks"
