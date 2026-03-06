@@ -1,301 +1,389 @@
-# AI 开发计划：mybot-mobile (React Native)
+# Redis + EventBus 消息解耦方案
 
-## 项目概述
+## 背景问题
 
-| 项目 | 路径 | 技术栈 |
-|------|------|--------|
-| 源项目 | `/root/.iflow-bot/workspace/mybot/frontend` | React 19 + TypeScript + WebSocket |
-| 目标项目 | `/root/.iflow-bot/workspace/mybot-mobile` | React Native (Expo SDK 52) + TypeScript |
+移动端 WebSocket 连接不稳定，切屏时经常断开，导致 AI 输出内容丢失。
 
-**目标输出**: 安卓 APK（支持 API 24+，即 Android 7.0+）
+## 架构设计
 
----
-
-## 源项目文件清单
+### 整体流程图
 
 ```
-frontend/src/
-├── contexts/
-│   ├── ChatContext.tsx          # 聊天状态管理 (WebSocket)
-│   └── NotificationContext.tsx  # 通知状态管理
-├── services/
-│   └── api.ts                   # API 封装 (Axios)
-├── types/
-│   └── index.ts                 # TypeScript 类型定义
-├── hooks/
-│   ├── useAuth.ts              # 认证状态 Hook
-│   ├── useWebSocket.ts         # WebSocket Hook
-│   └── useNotifications.ts     # 通知 Hook
-├── components/
-│   ├── Auth/
-│   │   ├── Login.tsx           # 用户名密码登录
-│   │   ├── Register.tsx        # 用户注册
-│   │   └── LoginEmail.tsx      # 邮箱验证码登录
-│   ├── Chat/
-│   │   ├── Chat.tsx            # 聊天主页面
-│   │   ├── Message.tsx         # 消息渲染
-│   │   ├── MessageInput.tsx    # 消息输入框
-│   │   ├── NewChatButton.tsx   # 新建会话按钮
-│   │   └── HistoryButton.tsx   # 历史记录按钮
-│   ├── Conversation/
-│   │   ├── ConversationDrawer.tsx   # 会话列表抽屉
-│   │   └── ConversationItem.tsx     # 会话项
-│   ├── TaskManager/
-│   │   ├── TaskManager.tsx     # 任务管理主页
-│   │   ├── TaskList.tsx        # 任务列表
-│   │   └── TaskCreator.tsx     # 任务创建
-│   ├── Notification/
-│   │   ├── NotificationBar.tsx # 通知栏
-│   │   └── NotificationItem.tsx# 通知项
-│   ├── ToolCall/
-│   │   └── ToolCall.tsx        # 工具调用展示
-│   ├── Workspace/
-│   │   ├── WorkspaceSelectModal.tsx  # 工作区选择弹窗
-│   │   └── DirectoryTree.tsx   # 目录树
-│   └── Layout/
-│       └── Header.tsx          # 顶部导航
-```
-
----
-
-## 文件迁移映射
-
-### 完全复制（无需修改）
-
-| 源文件 | 目标文件 | 说明 |
-|--------|----------|------|
-| `contexts/ChatContext.tsx` | `contexts/ChatContext.tsx` | 业务逻辑不变，仅改 WebSocket URL |
-| `contexts/NotificationContext.tsx` | `contexts/NotificationContext.tsx` | 完全不变 |
-| `services/api.ts` | `services/api.ts` | 基地址改公网 IP |
-| `types/index.ts` | `types/index.ts` | 完全不变 |
-
-### 适配迁移（修改存储层）
-
-| 源文件 | 目标文件 | 修改内容 |
-|--------|----------|----------|
-| `hooks/useAuth.ts` | `hooks/useAuth.ts` | `localStorage` → `AsyncStorage` |
-| `hooks/useWebSocket.ts` | `hooks/useWebSocket.ts` | 保持不变 |
-| `hooks/useNotifications.ts` | `hooks/useNotifications.ts` | 保持不变 |
-
-### 组件重写（RN 适配）
-
-| 源组件 | 目标 Screen | 主要改动 |
-|--------|-------------|----------|
-| `Auth/Login.tsx` | `screens/auth/LoginScreen.tsx` | Paper TextInput + Button |
-| `Auth/Register.tsx` | `screens/auth/RegisterScreen.tsx` | Paper 组件 |
-| `Auth/LoginEmail.tsx` | `screens/auth/LoginEmailScreen.tsx` | 验证码输入适配 |
-| `Chat/Chat.tsx` | `screens/ChatScreen.tsx` | FlatList + KeyboardAvoidingView |
-| `Chat/Message.tsx` | `components/Message.tsx` | Markdown 渲染适配 |
-| `Chat/MessageInput.tsx` | `components/MessageInput.tsx` | TextInput + 发送按钮 |
-| `Conversation/ConversationDrawer.tsx` | `screens/ConversationScreen.tsx` | FlatList 会话列表 |
-| `TaskManager/TaskManager.tsx` | `screens/TaskScreen.tsx` | Paper Card + FAB |
-| `Notification/NotificationBar.tsx` | `screens/NotificationScreen.tsx` | FlatList + Badge |
-| `Workspace/WorkspaceSelectModal.tsx` | `components/WorkspaceModal.tsx` | Paper Modal |
-
----
-
-## 技术选型
-
-### UI 组件库
-- **React Native Paper 5.x** - Material Design 3
-- 配色：深色主题 + 渐变色（紫蓝渐变）
-
-### 导航
-- **React Navigation 7.x**
-- Stack Navigator（主导航） + Tab Navigator（底部导航）
-
-### 存储
-- **AsyncStorage** - Token、用户信息持久化
-
-### Markdown
-- **react-native-markdown-display** - 聊天消息渲染
-
-### 图标
-- **@expo/vector-icons** - MaterialCommunityIcons
-
----
-
-## API 配置
-
-```typescript
-// config/api.ts
-export const API_BASE_URL = 'http://120.53.45.173:8000/api';
-export const WS_BASE_URL = 'ws://120.53.45.173:8000/ws';
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              输入层 (Input Handlers)                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   WebSocket 输入     ─────┐                                                  │
+│                              │                                                │
+│   (未来) HTTP API    ─────┼──→  EventBus.emit('user_message', data)        │
+│                              │                                                │
+│   (未来) MQTT       ─────┘                                                  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           业务处理层 (Business Logic)                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   EventBus.on('user_message') → iFlow Client → 流式响应                    │
+│                                          │                                   │
+│                                          ▼                                   │
+│                              EventBus.emit('ai_response', chunk)           │
+│                              EventBus.emit('ai_complete', full_response)   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              输出层 (Output Handlers)                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Redis Publisher   ←── EventBus.on('ai_response')  ←── 流式 chunks       │
+│         │                        │                                           │
+│         │                        └── EventBus.on('ai_complete')             │
+│         │                              │                                     │
+│         │                              ▼                                     │
+│         │                         DB 存储完整响应                            │
+│         │                                                                    │
+│         ▼                                                                    │
+│   Redis Stream: user:{user_id}:messages                                     │
+│         │                                                                    │
+│         ▼                                                                    │
+│   WebSocket 订阅 Redis → 推送给前端                                          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 依赖安装清单
+## Redis 安装部署
+
+### 1. 版本选择
+
+| 项目 | 版本 | 说明 |
+|------|------|------|
+| Redis Server | **7.2.x** | 当前稳定版，性能优化好，内存占用低 |
+| Python 客户端 | `redis[asyncio] >= 5.0.0` | 支持异步操作 |
+| blinker | `>= 1.7.0` | Flask 同款信号库，轻量稳定 |
+
+### 2. 安装步骤
+
+#### 2.1 安装 Redis Server
 
 ```bash
-# 创建项目
-npx create-expo-app@latest mybot-mobile --template blank-typescript
-cd mybot-mobile
+# 方式一：yum 安装（OpenCloudOS 兼容）
+sudo yum install redis -y
 
-# 导航
-npm install @react-navigation/native @react-navigation/native-stack @react-navigation/bottom-tabs
-npx expo install react-native-screens react-native-safe-area-context
+# 方式二：源码编译（推荐，版本更新）
+cd /tmp
+wget https://download.redis.io/releases/redis-7.2.4.tar.gz
+tar xzf redis-7.2.4.tar.gz
+cd redis-7.2.4
+make
+sudo make install PREFIX=/usr/local/redis
+```
 
-# UI
-npm install react-native-paper
-npx expo install react-native-vector-icons @expo/vector-icons
+#### 2.2 创建配置文件
 
-# 存储
-npm install @react-native-async-storage/async-storage
+```bash
+sudo mkdir -p /etc/redis
+sudo mkdir -p /var/lib/redis
+sudo mkdir -p /var/log/redis
 
-# HTTP
-npm install axios
+# 创建配置文件
+sudo tee /etc/redis/redis.conf << 'EOF'
+# 基础配置
+bind 127.0.0.1
+port 6379
+daemonize yes
+pidfile /var/run/redis/redis-server.pid
+logfile /var/log/redis/redis.log
+dir /var/lib/redis
 
-# Markdown
-npm install react-native-markdown-display
+# 内存限制（关键！）
+maxmemory 32mb
+maxmemory-policy allkeys-lru
 
-# 手势动画（导航依赖）
-npm install react-native-gesture-handler react-native-reanimated
+# 持久化（可选，断电不丢数据）
+# appendonly yes
+# appendfsync everysec
 
-# 图库选择（头像等功能预留）
-npx expo install expo-image-picker
+# 性能优化
+tcp-backlog 511
+timeout 0
+tcp-keepalive 300
+
+# 安全（可选，生产环境建议设置密码）
+# requirepass your_strong_password_here
+EOF
+```
+
+#### 2.3 创建 systemd 服务
+
+```bash
+sudo tee /etc/systemd/system/redis.service << 'EOF'
+[Unit]
+Description=Redis In-Memory Data Store
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/redis-server /etc/redis/redis.conf
+ExecStop=/usr/bin/redis-cli shutdown
+Restart=always
+RestartSec=5
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 重载 systemd
+sudo systemctl daemon-reload
+
+# 启动并设置开机自启
+sudo systemctl start redis
+sudo systemctl enable redis
+
+# 验证
+redis-cli ping  # 应返回 PONG
+```
+
+#### 2.4 安装 Python 依赖
+
+```bash
+cd /root/.iflow-bot/workspace/mybot/backend
+pip install "redis[asyncio]>=5.0.0" "blinker>=1.7.0"
+```
+
+### 3. 部署后验证
+
+```bash
+# 检查服务状态
+sudo systemctl status redis
+
+# 检查内存配置
+redis-cli CONFIG GET maxmemory
+
+# 检查内存淘汰策略
+redis-cli CONFIG GET maxmemory-policy
+
+# 测试基本操作
+redis-cli SET test_key "hello"
+redis-cli GET test_key
+redis-cli DEL test_key
+```
+
+### 4. 资源占用预估
+
+| 指标 | 预估值 | 说明 |
+|------|--------|------|
+| 进程内存 | ~8-12 MB | 空闲状态 |
+| 数据内存 | ≤32 MB | 受 maxmemory 限制 |
+| 总内存 | ~40-45 MB | 进程 + 数据 |
+| CPU | < 1% | 空闲时几乎为 0 |
+| 磁盘 | < 1 MB | 无持久化时 |
+
+### 5. 运维命令
+
+```bash
+# 查看内存使用
+redis-cli INFO memory
+
+# 查看当前连接数
+redis-cli INFO clients
+
+# 查看所有 key
+redis-cli KEYS "*"
+
+# 清空所有数据（慎用）
+redis-cli FLUSHALL
+
+# 监控实时命令
+redis-cli MONITOR
+
+# 查看日志
+tail -f /var/log/redis/redis.log
 ```
 
 ---
 
-## 项目结构
+## 核心组件设计
 
-```
-mybot-mobile/
-├── app.json                  # Expo 配置
-├── App.tsx                   # 入口 + 导航配置
-├── babel.config.js           # Babel 配置（reanimated 插件）
-├── tsconfig.json
-├── src/
-│   ├── config/
-│   │   └── api.ts            # API 地址配置
-│   ├── contexts/
-│   │   ├── ChatContext.tsx
-│   │   └── NotificationContext.tsx
-│   ├── services/
-│   │   └── api.ts
-│   ├── types/
-│   │   └── index.ts
-│   ├── hooks/
-│   │   ├── useAuth.ts
-│   │   ├── useWebSocket.ts
-│   │   └── useNotifications.ts
-│   ├── screens/
-│   │   ├── auth/
-│   │   │   ├── LoginScreen.tsx
-│   │   │   ├── RegisterScreen.tsx
-│   │   │   └── LoginEmailScreen.tsx
-│   │   ├── ChatScreen.tsx
-│   │   ├── ConversationScreen.tsx
-│   │   ├── TaskScreen.tsx
-│   │   └── NotificationScreen.tsx
-│   ├── components/
-│   │   ├── Message.tsx
-│   │   ├── MessageInput.tsx
-│   │   ├── WorkspaceModal.tsx
-│   │   ├── DirectoryTree.tsx
-│   │   └── ToolCall.tsx
-│   ├── navigation/
-│   │   ├── AuthStack.tsx     # 未登录导航
-│   │   ├── MainStack.tsx     # 已登录导航
-│   │   └── MainTab.tsx       # 底部 Tab 导航
-│   └── theme/
-│       └── theme.ts          # Paper 主题配置
-└── assets/
-    ├── icon.png              # App 图标 (1024x1024)
-    ├── adaptive-icon.png     # Android 自适应图标
-    └── splash.png            # 启动屏
+### 1. EventBus (使用 blinker)
+
+```python
+# services/event_bus.py
+from blinker import Signal
+
+class EventBus:
+    # 信号定义
+    user_message = Signal('user_message')      # 用户输入
+    ai_response = Signal('ai_response')        # AI 流式响应
+    ai_complete = Signal('ai_complete')        # AI 响应完成
+    
+    @classmethod
+    def emit(cls, signal_name: str, sender=None, **kwargs):
+        """发射信号"""
+        signal = getattr(cls, signal_name)
+        signal.send(sender, **kwargs)
+    
+    @classmethod
+    def on(cls, signal_name: str):
+        """订阅信号装饰器"""
+        signal = getattr(cls, signal_name)
+        return signal.connect
 ```
 
----
+### 2. Redis 配置（轻量级）
 
-## 任务清单
+```python
+# config.py 新增
+REDIS_URL = "redis://localhost:6379/0"
+REDIS_MAX_MEMORY = "32mb"        # 限制最大内存
+REDIS_MESSAGE_TTL = 300          # 消息保留 5 分钟
+```
 
-### Phase 1: 项目初始化
-1. [ ] 创建 Expo 项目，安装所有依赖
-2. [ ] 配置 babel.config.js（reanimated 插件）
-3. [ ] 配置 app.json（权限、图标、启动屏）
+### 3. 消息缓冲服务
 
-### Phase 2: 核心逻辑迁移
-4. [ ] 复制 `types/index.ts`
-5. [ ] 复制并适配 `services/api.ts`
-6. [ ] 复制 `contexts/ChatContext.tsx`，修改 WebSocket URL
-7. [ ] 复制 `contexts/NotificationContext.tsx`
-8. [ ] 适配 `hooks/useAuth.ts`（AsyncStorage）
+```python
+# services/message_buffer.py
+import redis.asyncio as redis
+import json
 
-### Phase 3: 导航配置
-9. [ ] 创建 AuthStack（登录、注册、邮箱登录）
-10. [ ] 创建 MainTab（聊天、任务、通知）
-11. [ ] 创建 MainStack（包含 Tab + Modal）
-12. [ ] 配置 App.tsx 入口
+class MessageBuffer:
+    def __init__(self, redis_url: str):
+        self.redis = redis.from_url(redis_url)
+    
+    async def push(self, user_id: int, message: dict):
+        """推送消息到用户队列"""
+        key = f"user:{user_id}:messages"
+        await self.redis.xadd(key, {"data": json.dumps(message)})
+        await self.redis.expire(key, 300)  # 5分钟过期
+    
+    async def consume(self, user_id: int, count: int = 10):
+        """消费未读消息"""
+        key = f"user:{user_id}:messages"
+        messages = await self.redis.xread({key: "0"}, count=count)
+        if messages:
+            # 返回消息并删除
+            ids = [msg[0] for msg in messages[0][1]]
+            await self.redis.xdel(key, *ids)
+        return messages
+    
+    async def get_pending(self, user_id: int):
+        """获取待推送消息（重连恢复用）"""
+        key = f"user:{user_id}:messages"
+        return await self.redis.xread({key: "0"}, count=50)
+```
 
-### Phase 4: 认证页面
-13. [ ] LoginScreen - 用户名密码登录
-14. [ ] RegisterScreen - 用户注册
-15. [ ] LoginEmailScreen - 邮箱验证码登录
+### 4. 输入输出组件解耦
 
-### Phase 5: 聊天功能
-16. [ ] ChatScreen - 聊天主页面
-17. [ ] Message 组件 - Markdown 消息渲染
-18. [ ] MessageInput 组件 - 输入框 + 发送
-19. [ ] ConversationScreen - 会话列表
+```python
+# services/input_handlers/websocket_input.py
+class WebSocketInputHandler:
+    """WebSocket 输入处理器"""
+    
+    def __init__(self):
+        EventBus.user_message.connect(self._on_user_message)
+    
+    async def handle(self, user_id: int, content: str, conversation_id: int):
+        # 只负责发射事件，不关心后续处理
+        EventBus.emit('user_message', user_id=user_id, 
+                     content=content, conversation_id=conversation_id)
 
-### Phase 6: 任务与通知
-20. [ ] TaskScreen - 任务管理页面
-21. [ ] NotificationScreen - 通知列表
 
-### Phase 7: 主题与适配
-22. [ ] 配置 Paper 深色主题
-23. [ ] Android 返回键处理
-24. [ ] 软键盘适配（KeyboardAvoidingView）
-25. [ ] 状态栏沉浸
-
-### Phase 8: 构建与测试
-26. [ ] 准备 App 图标和启动屏资源
-27. [ ] 配置 EAS Build
-28. [ ] 构建 APK：`eas build -p android`
-29. [ ] 真机安装测试
-
----
-
-## Android 权限配置
-
-```json
-// app.json
-{
-  "expo": {
-    "android": {
-      "permissions": [
-        "INTERNET",
-        "ACCESS_NETWORK_STATE"
-      ]
-    }
-  }
-}
+# services/output_handlers/redis_output.py
+class RedisOutputHandler:
+    """Redis 输出处理器"""
+    
+    def __init__(self, buffer: MessageBuffer):
+        self.buffer = buffer
+        # 订阅 AI 响应事件
+        EventBus.ai_response.connect(self._on_ai_response)
+        EventBus.ai_complete.connect(self._on_ai_complete)
+    
+    async def _on_ai_response(self, sender, **kwargs):
+        """流式推送"""
+        await self.buffer.push(kwargs['user_id'], {
+            'type': 'stream',
+            'content': kwargs['content'],
+            'is_delta': True
+        })
+    
+    async def _on_ai_complete(self, sender, **kwargs):
+        """完成后存 DB + 推送完成标记"""
+        # 存储到数据库
+        await save_to_db(kwargs)
+        # 推送完成标记
+        await self.buffer.push(kwargs['user_id'], {
+            'type': 'complete',
+            'content': kwargs['content']
+        })
 ```
 
 ---
 
-## 注意事项
+## 文件改动清单
 
-1. **WebSocket 连接**：确保后端服务在 `120.53.45.173:8000` 可访问
-2. **软键盘**：聊天页面必须使用 `KeyboardAvoidingView`
-3. **Markdown 渲染**：测试工具调用、代码块的显示效果
-4. **Token 过期**：401 响应需要跳转登录页
-5. **网络状态**：添加网络错误提示
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `backend/requirements.txt` | 修改 | 添加 `redis`、`blinker` |
+| `backend/config.py` | 修改 | 添加 Redis 配置 |
+| `backend/services/event_bus.py` | 新建 | EventBus 信号定义 |
+| `backend/services/message_buffer.py` | 新建 | Redis 消息缓冲 |
+| `backend/services/input_handlers/__init__.py` | 新建 | 输入处理器模块 |
+| `backend/services/input_handlers/websocket_input.py` | 新建 | WebSocket 输入适配器 |
+| `backend/services/output_handlers/__init__.py` | 新建 | 输出处理器模块 |
+| `backend/services/output_handlers/redis_output.py` | 新建 | Redis 输出适配器 |
+| `backend/services/output_handlers/db_output.py` | 新建 | 数据库输出适配器 |
+| `backend/routers/websocket.py` | 修改 | 接入 EventBus |
+| `backend/main.py` | 修改 | 初始化 Redis 连接 |
+| `frontend/src/contexts/ChatContext.tsx` | 修改 | 重连后从 Redis 拉取消息 |
 
 ---
 
-## Web → RN 组件对照
+## 实施步骤
 
-| Web | React Native |
-|-----|--------------|
-| `<div>` | `<View>` |
-| `<span>`, `<p>` | `<Text>` |
-| `<input>` | `<TextInput>` |
-| `<button>` | `<Button>` / `<TouchableOpacity>` |
-| `localStorage` | `AsyncStorage` |
-| `window.location.href` | `navigation.navigate()` |
-| CSS 文件 | `StyleSheet.create()` |
-| `onClick` | `onPress` |
-| `onKeyDown` | `onKeyPress` |
+### Phase 1: Redis 安装部署
+- [ ] 安装 Redis Server（yum 或源码编译）
+- [ ] 创建配置文件 `/etc/redis/redis.conf`
+- [ ] 配置 systemd 服务，开机自启
+- [ ] 安装 Python 依赖：`redis[asyncio]`、`blinker`
+
+### Phase 2: 后端核心模块
+- [ ] 创建 `services/event_bus.py` - EventBus 信号定义
+- [ ] 创建 `services/message_buffer.py` - Redis 消息缓冲
+- [ ] 修改 `config.py` - 添加 Redis 配置
+- [ ] 修改 `requirements.txt` - 添加依赖
+
+### Phase 3: 输入输出处理器
+- [ ] 创建 `services/input_handlers/__init__.py`
+- [ ] 创建 `services/input_handlers/websocket_input.py`
+- [ ] 创建 `services/output_handlers/__init__.py`
+- [ ] 创建 `services/output_handlers/redis_output.py`
+- [ ] 创建 `services/output_handlers/db_output.py`
+
+### Phase 4: 集成改造
+- [ ] 修改 `routers/websocket.py` - 接入 EventBus
+- [ ] 修改 `main.py` - 初始化 Redis 连接和处理器
+
+### Phase 5: 前端改造
+- [ ] 修改 `ChatContext.tsx` - 重连后从 Redis 拉取消息
+- [ ] 添加 API 接口调用获取待消费消息
+
+### Phase 6: 测试验证
+- [ ] 单元测试：EventBus、MessageBuffer
+- [ ] 集成测试：断线重连场景
+- [ ] 压力测试：并发消息处理
+
+---
+
+## 优势总结
+
+1. **解耦彻底**：输入输出组件可独立替换
+2. **资源可控**：Redis 内存受限 + 自动过期
+3. **扩展性好**：未来可添加 HTTP 输入、MQTT 输出等
+4. **断线恢复**：重连后从 Redis 拉取未消费消息
