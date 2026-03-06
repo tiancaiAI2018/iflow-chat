@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from services.event_bus import EventBus
+from backend.services.event_bus import EventBus
 
 
 class TestRedisOutputHandler:

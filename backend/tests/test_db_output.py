@@ -17,7 +17,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
 
-from services.event_bus import EventBus
+from backend.services.event_bus import EventBus
 
 
 class TestDBOutputHandler:

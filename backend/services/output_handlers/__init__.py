@@ -7,7 +7,7 @@
 - RedisOutputHandler: 推送消息到 Redis Stream（用于 WebSocket 断线恢复）
 - DBOutputHandler: 存储完整响应到数据库
 """
-from services.output_handlers.redis_output import RedisOutputHandler
-from services.output_handlers.db_output import DBOutputHandler
+from .redis_output import RedisOutputHandler
+from .db_output import DBOutputHandler
 
 __all__ = ['RedisOutputHandler', 'DBOutputHandler']

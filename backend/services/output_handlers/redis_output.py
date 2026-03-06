@@ -8,8 +8,8 @@ import asyncio
 import logging
 from typing import Optional, Any
 
-from services.event_bus import EventBus
-from services.message_buffer import MessageBuffer
+from backend.services.event_bus import EventBus
+from backend.services.message_buffer import MessageBuffer
 
 logger = logging.getLogger(__name__)
 

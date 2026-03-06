@@ -9,7 +9,7 @@ import logging
 from typing import Optional, Any
 from datetime import datetime, timezone
 
-from services.event_bus import EventBus
+from backend.services.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 

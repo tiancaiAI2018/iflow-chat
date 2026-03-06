@@ -6,6 +6,6 @@
 可用的输入处理器：
 - WebSocketInputHandler: WebSocket 连接输入
 """
-from services.input_handlers.websocket_input import WebSocketInputHandler
+from .websocket_input import WebSocketInputHandler
 
 __all__ = ['WebSocketInputHandler']

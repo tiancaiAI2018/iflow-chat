@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
-from services.input_handlers.websocket_input import WebSocketInputHandler
-from services.event_bus import EventBus
+from backend.services.input_handlers.websocket_input import WebSocketInputHandler
+from backend.services.event_bus import EventBus
 
 
 class TestWebSocketInputHandler:

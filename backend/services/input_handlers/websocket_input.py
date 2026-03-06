@@ -4,7 +4,7 @@ WebSocket 输入处理器
 处理来自 WebSocket 的用户输入，通过 EventBus 发射 user_message 信号。
 """
 from typing import Optional, Any
-from services.event_bus import EventBus
+from backend.services.event_bus import EventBus
 
 
 class WebSocketInputHandler:
