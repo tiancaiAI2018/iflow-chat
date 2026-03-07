@@ -209,6 +209,7 @@ class IFlowClientService:
         reconnect_base_delay: float = 1.0,
         health_check_interval: float = 60.0,
         session_id: Optional[str] = None,
+        user_id: Optional[int] = None,
     ):
         """
         初始化 iFlow 客户端服务
@@ -220,6 +221,7 @@ class IFlowClientService:
             reconnect_base_delay: 重连基础延迟（秒）
             health_check_interval: 健康检查间隔（秒）
             session_id: iFlow 会话 ID，用于保持会话上下文
+            user_id: 用户 ID，用于端口栈管理
         """
         self.cwd = cwd or "/root/.iflow-bot/workspace"
         self.timeout = timeout or settings.IFLOW_TIMEOUT
@@ -227,6 +229,7 @@ class IFlowClientService:
         self.reconnect_base_delay = reconnect_base_delay
         self.health_check_interval = health_check_interval
         self.session_id = session_id
+        self.user_id = user_id or 0  # 默认用户 ID 为 0
         self._client: Optional[SDKClient] = None
         self._options: Optional[IFlowOptions] = None
         self._is_connected = False
@@ -236,14 +239,18 @@ class IFlowClientService:
         self._consecutive_failures = 0  # 连续失败次数
         self._service_unavailable_threshold = 3  # 判定服务不可用的连续失败阈值
         
-        # 根据工作目录分配端口
-        self._port = _get_port_for_cwd(self.cwd)
-        self._url = f"ws://localhost:{self._port}/acp"
+        # 端口和 URL 将在 connect 时动态分配
+        self._port: Optional[int] = None
+        self._url: Optional[str] = None
     
     async def connect(self) -> None:
         """
         建立 WebSocket 连接
-        使用 auto_start_process=True 让 iFlow SDK 自动管理进程
+        使用 ACP 进程手动管理模式：
+        1. 查找可用端口
+        2. 启动 ACP 进程（带 --stream 参数）
+        3. 端口入栈
+        4. SDK 连接（auto_start_process=False）
         支持自动重试
         
         注意：由于 os.chdir 是进程级全局操作，使用 _cwd_lock 锁保护以避免并发问题
@@ -252,28 +259,33 @@ class IFlowClientService:
             logger.debug("Already connected to iFlow service")
             return
         
-        # 检查端口是否已被其他进程占用（非 iFlow 进程）
-        if self._port != BASE_PORT and not _is_port_available(self._port):
-            # 端口被占用，尝试重新分配
-            logger.warning(f"Port {self._port} is already in use, trying to reassign...")
-            global _used_ports, _cwd_port_map
-            _used_ports.discard(self._port)
-            del _cwd_port_map[self.cwd]
-            self._port = _get_port_for_cwd(self.cwd)
-            self._url = f"ws://localhost:{self._port}/acp"
-        
-        self._options = IFlowOptions(
-            url=self._url,            # 使用动态 URL（包含端口）
-            auto_start_process=True,  # 自动管理模式，让 SDK 启动和管理进程
-            cwd=self.cwd,             # 工作目录（传给 iflow session）
-            timeout=self.timeout,
-            session_id=self.session_id,  # 传入 session_id 保持会话上下文
-            process_start_port=self._port,  # 指定启动端口
-        )
-        
         last_error = None
         for attempt in range(self.max_reconnect_attempts):
             try:
+                # 步骤 1: 查找可用端口
+                port = await self._find_available_port(self.user_id)
+                logger.info(f"Found available port {port} for user {self.user_id}")
+                
+                # 步骤 2: 启动 ACP 进程
+                process = await self._start_acp_process(port)
+                logger.info(f"Started ACP process on port {port}")
+                
+                # 步骤 3: 端口入栈
+                self._push_user_port(self.user_id, port)
+                
+                # 设置端口和 URL
+                self._port = port
+                self._url = f"ws://localhost:{port}/acp"
+                
+                # 步骤 4: SDK 连接配置（auto_start_process=False，手动管理）
+                self._options = IFlowOptions(
+                    url=self._url,
+                    auto_start_process=False,  # 关键：手动管理 ACP 进程
+                    cwd=self.cwd,
+                    timeout=self.timeout,
+                    session_id=self.session_id,
+                )
+                
                 # 使用全局锁保护目录切换操作（进程级全局状态）
                 async with _cwd_lock:
                     # 保存原来的工作目录
@@ -297,13 +309,13 @@ class IFlowClientService:
                 self._record_success()  # 记录成功连接
                 
                 # 更新 session_id（首次连接时由服务器生成）
-                # SDK 的 session_id 存储在 _session_id 属性中
                 if hasattr(self._client, '_session_id') and self._client._session_id:
                     self.session_id = self._client._session_id
-                    logger.info(f"Connected to iFlow service with cwd={self.cwd}, port={self._port}, session_id={self.session_id}")
+                    logger.info(f"Connected to iFlow service with cwd={self.cwd}, port={port}, user_id={self.user_id}, session_id={self.session_id}")
                 else:
-                    logger.info(f"Connected to iFlow service with cwd={self.cwd}, port={self._port}")
+                    logger.info(f"Connected to iFlow service with cwd={self.cwd}, port={port}, user_id={self.user_id}")
                 return
+                
             except Exception as e:
                 last_error = e
                 self._connection_errors.append({
@@ -312,6 +324,13 @@ class IFlowClientService:
                     "attempt": attempt + 1,
                 })
                 self._record_failure(str(e))  # 记录失败
+                
+                # 清理已分配的资源
+                if hasattr(self, '_port') and self._port:
+                    await self._stop_acp_process(self._port)
+                    self._remove_user_port(self.user_id, self._port)
+                    self._port = None
+                    self._url = None
                 
                 if attempt < self.max_reconnect_attempts - 1:
                     delay = self.reconnect_base_delay * (2 ** attempt)  # 指数退避

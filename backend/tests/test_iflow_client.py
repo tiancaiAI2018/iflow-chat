@@ -113,6 +113,18 @@ class TestIFlowClientServiceInit:
 class TestIFlowClientServiceConnection:
     """IFlowClientService 连接管理测试"""
     
+    def setup_method(self):
+        """每个测试方法前清理状态"""
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
+    def teardown_method(self):
+        """每个测试方法后清理状态"""
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
     @pytest.mark.asyncio
     async def test_connect_success(self):
         """测试连接成功"""
@@ -185,7 +197,7 @@ class TestIFlowClientServiceConnection:
 
     @pytest.mark.asyncio
     async def test_connect_with_cwd_auto_start(self):
-        """测试使用 cwd 和 auto_start_process 模式连接"""
+        """测试使用 cwd 和 auto_start_process=False 模式连接（手动管理 ACP 进程）"""
         custom_cwd = "/root/.iflow-bot/workspace/mybot"
         client = IFlowClientService(cwd=custom_cwd)
         
@@ -202,18 +214,19 @@ class TestIFlowClientServiceConnection:
             captured_options = options
             return mock_sdk_client
         
-        with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
-            await client.connect()
-            
-            # 验证 IFlowOptions 参数
-            assert captured_options is not None
-            assert captured_options.auto_start_process is True
-            assert captured_options.cwd == custom_cwd
+        with patch.object(IFlowClientService, '_start_acp_process', return_value=AsyncMock()):
+            with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
+                await client.connect()
+                
+                # 验证 IFlowOptions 参数
+                assert captured_options is not None
+                assert captured_options.auto_start_process is False  # 关键：手动管理
+                assert captured_options.cwd == custom_cwd
     
     @pytest.mark.asyncio
     async def test_connect_options_no_url(self):
-        """测试连接时 IFlowOptions 不指定 url（使用默认）"""
-        client = IFlowClientService(cwd="/custom/path")
+        """测试连接时 IFlowOptions 使用动态分配的 url 和 auto_start_process=False"""
+        client = IFlowClientService(cwd="/root/.iflow-bot/workspace/mybot")
         
         # Mock SDK client
         mock_sdk_client = AsyncMock()
@@ -227,20 +240,24 @@ class TestIFlowClientServiceConnection:
             captured_options = options
             return mock_sdk_client
         
-        with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
-            await client.connect()
-            
-            # 验证 IFlowOptions 参数
-            assert captured_options is not None
-            assert captured_options.cwd == "/custom/path"
-            # auto_start_process 应该为 True
-            assert captured_options.auto_start_process is True
+        with patch.object(IFlowClientService, '_start_acp_process', return_value=AsyncMock()):
+            with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
+                await client.connect()
+                
+                # 验证 IFlowOptions 参数
+                assert captured_options is not None
+                assert captured_options.cwd == "/root/.iflow-bot/workspace/mybot"
+                # auto_start_process 应该为 False（手动管理 ACP 进程）
+                assert captured_options.auto_start_process is False
+                # URL 应该是动态分配的端口
+                assert captured_options.url.startswith("ws://localhost:")
+                assert "/acp" in captured_options.url
 
     @pytest.mark.asyncio
     async def test_connect_with_session_id(self):
         """测试连接时传递 session_id"""
         client = IFlowClientService(
-            cwd="/custom/path",
+            cwd="/root/.iflow-bot/workspace/mybot",
             session_id="existing-session-456"
         )
         
@@ -256,12 +273,13 @@ class TestIFlowClientServiceConnection:
             captured_options = options
             return mock_sdk_client
         
-        with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
-            await client.connect()
-            
-            # 验证 IFlowOptions 包含 session_id
-            assert captured_options is not None
-            assert captured_options.session_id == "existing-session-456"
+        with patch.object(IFlowClientService, '_start_acp_process', return_value=AsyncMock()):
+            with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
+                await client.connect()
+                
+                # 验证 IFlowOptions 包含 session_id
+                assert captured_options is not None
+                assert captured_options.session_id == "existing-session-456"
 
 
 class TestIFlowClientServiceQuery:
@@ -939,3 +957,130 @@ class TestACPProcessManagement:
         
         # 验证状态未改变
         assert port not in IFlowClientService._port_processes
+
+
+# ============= feat-044: connect 方法改造测试 =============
+
+class TestConnectFlow:
+    """connect 方法改造测试 - 集成端口栈管理"""
+    
+    def setup_method(self):
+        """每个测试方法前清理状态"""
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
+    def teardown_method(self):
+        """每个测试方法后清理状态"""
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
+    @pytest.mark.asyncio
+    async def test_connect_flow(self):
+        """测试连接流程：分配端口、启动进程、端口入栈、SDK 连接"""
+        user_id = 1001
+        test_port = 8888  # 使用固定的测试端口
+        
+        # 创建服务实例
+        client = IFlowClientService(user_id=user_id)
+        
+        # Mock _start_acp_process 和 SDKClient
+        mock_process = AsyncMock()
+        mock_process.pid = 12345
+        
+        mock_sdk_client = AsyncMock()
+        mock_sdk_client.__aenter__ = AsyncMock(return_value=mock_sdk_client)
+        mock_sdk_client._session_id = "test-session-001"
+        
+        captured_options = None
+        
+        def capture_options(options):
+            nonlocal captured_options
+            captured_options = options
+            return mock_sdk_client
+        
+        # 模拟真实的 _find_available_port 行为：分配端口并添加到 _used_ports
+        async def mock_find_port(user_id):
+            IFlowClientService._used_ports.add(test_port)
+            return test_port
+        
+        with patch.object(IFlowClientService, '_find_available_port', side_effect=mock_find_port):
+            with patch.object(IFlowClientService, '_start_acp_process', return_value=mock_process):
+                with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
+                    await client.connect()
+        
+        # 验证：端口已分配并添加到已使用集合
+        assert client._port == test_port
+        assert test_port in IFlowClientService._used_ports
+        
+        # 验证：端口已入栈
+        user_ports = IFlowClientService._get_user_ports(user_id)
+        assert test_port in user_ports
+        assert user_ports[0] == test_port  # 栈顶是最新端口
+        
+        # 验证：SDK 连接使用了 auto_start_process=False
+        assert captured_options is not None
+        assert captured_options.auto_start_process is False
+        assert captured_options.url == f"ws://localhost:{test_port}/acp"
+        
+        # 验证：连接状态
+        assert client.is_connected is True
+    
+    @pytest.mark.asyncio
+    async def test_multi_connect_stack(self):
+        """测试同一用户多次连接时端口栈的变化"""
+        user_id = 1002
+        
+        # 模拟三次连接
+        ports = []
+        for i in range(3):
+            client = IFlowClientService(user_id=user_id)
+            
+            mock_process = AsyncMock()
+            mock_process.pid = 12345 + i
+            
+            mock_sdk_client = AsyncMock()
+            mock_sdk_client.__aenter__ = AsyncMock(return_value=mock_sdk_client)
+            mock_sdk_client._session_id = f"test-session-{i}"
+            
+            with patch.object(IFlowClientService, '_start_acp_process', return_value=mock_process):
+                with patch('backend.services.iflow_client.SDKClient', return_value=mock_sdk_client):
+                    await client.connect()
+            
+            ports.append(client._port)
+        
+        # 验证：端口栈中有 3 个端口
+        user_ports = IFlowClientService._get_user_ports(user_id)
+        assert len(user_ports) == 3
+        
+        # 验证：栈顶（索引 0）是最新的端口
+        assert user_ports[0] == ports[2]
+        assert user_ports[1] == ports[1]
+        assert user_ports[2] == ports[0]
+    
+    @pytest.mark.asyncio
+    async def test_connect_with_auto_start_false(self):
+        """测试 connect 方法使用 auto_start_process=False"""
+        user_id = 1003
+        client = IFlowClientService(user_id=user_id)
+        
+        mock_process = AsyncMock()
+        mock_sdk_client = AsyncMock()
+        mock_sdk_client.__aenter__ = AsyncMock(return_value=mock_sdk_client)
+        
+        captured_options = None
+        
+        def capture_options(options):
+            nonlocal captured_options
+            captured_options = options
+            return mock_sdk_client
+        
+        with patch.object(IFlowClientService, '_start_acp_process', return_value=mock_process):
+            with patch('backend.services.iflow_client.SDKClient', side_effect=capture_options):
+                await client.connect()
+        
+        # 关键验证：auto_start_process=False
+        assert captured_options is not None
+        assert captured_options.auto_start_process is False
+        assert captured_options.cwd == client.cwd
