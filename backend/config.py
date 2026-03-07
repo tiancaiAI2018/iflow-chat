@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     REDIS_MAX_MEMORY: str = "32mb"  # Redis 最大内存限制
     REDIS_MESSAGE_TTL: int = 300  # 消息保留时间（秒），默认 5 分钟
     
+    # ACP 进程管理配置
+    ACP_PORT_START: int = 8091        # 端口起始
+    ACP_PORT_END: int = 9000          # 端口结束（支持约 900 个并发）
+    ACP_MAX_PORT_RETRIES: int = 10    # 每次分配端口时最大重试次数
+    ACP_STARTUP_TIMEOUT: float = 5.0  # 进程启动超时（秒）
+    
     # 数据目录
     DATA_DIR: str = "./data"
     TASKS_DIR: str = "./data/tasks"

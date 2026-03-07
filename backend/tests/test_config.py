@@ -72,3 +72,79 @@ class TestConfigIntegration:
 
         assert isinstance(settings.REDIS_MESSAGE_TTL, int)
         assert settings.REDIS_MESSAGE_TTL > 0
+
+
+class TestACPConfig:
+    """测试 ACP 进程配置"""
+
+    def test_acp_port_start_config_exists(self):
+        """测试 ACP_PORT_START 配置存在"""
+        from config import settings
+
+        assert hasattr(settings, 'ACP_PORT_START'), "settings 应该有 ACP_PORT_START 配置"
+
+    def test_acp_port_start_default_value(self):
+        """测试 ACP_PORT_START 默认值"""
+        from config import settings
+
+        assert settings.ACP_PORT_START == 8091
+
+    def test_acp_port_start_is_integer(self):
+        """测试 ACP_PORT_START 是整数类型"""
+        from config import settings
+
+        assert isinstance(settings.ACP_PORT_START, int)
+
+    def test_acp_port_end_config_exists(self):
+        """测试 ACP_PORT_END 配置存在"""
+        from config import settings
+
+        assert hasattr(settings, 'ACP_PORT_END'), "settings 应该有 ACP_PORT_END 配置"
+
+    def test_acp_port_end_default_value(self):
+        """测试 ACP_PORT_END 默认值"""
+        from config import settings
+
+        assert settings.ACP_PORT_END == 9000
+
+    def test_acp_port_end_is_integer(self):
+        """测试 ACP_PORT_END 是整数类型"""
+        from config import settings
+
+        assert isinstance(settings.ACP_PORT_END, int)
+
+    def test_acp_max_port_retries_config_exists(self):
+        """测试 ACP_MAX_PORT_RETRIES 配置存在"""
+        from config import settings
+
+        assert hasattr(settings, 'ACP_MAX_PORT_RETRIES'), "settings 应该有 ACP_MAX_PORT_RETRIES 配置"
+
+    def test_acp_max_port_retries_default_value(self):
+        """测试 ACP_MAX_PORT_RETRIES 默认值"""
+        from config import settings
+
+        assert settings.ACP_MAX_PORT_RETRIES == 10
+
+    def test_acp_max_port_retries_is_integer(self):
+        """测试 ACP_MAX_PORT_RETRIES 是整数类型"""
+        from config import settings
+
+        assert isinstance(settings.ACP_MAX_PORT_RETRIES, int)
+
+    def test_acp_startup_timeout_config_exists(self):
+        """测试 ACP_STARTUP_TIMEOUT 配置存在"""
+        from config import settings
+
+        assert hasattr(settings, 'ACP_STARTUP_TIMEOUT'), "settings 应该有 ACP_STARTUP_TIMEOUT 配置"
+
+    def test_acp_startup_timeout_default_value(self):
+        """测试 ACP_STARTUP_TIMEOUT 默认值"""
+        from config import settings
+
+        assert settings.ACP_STARTUP_TIMEOUT == 5.0
+
+    def test_acp_startup_timeout_is_float(self):
+        """测试 ACP_STARTUP_TIMEOUT 是浮点数类型"""
+        from config import settings
+
+        assert isinstance(settings.ACP_STARTUP_TIMEOUT, float)
