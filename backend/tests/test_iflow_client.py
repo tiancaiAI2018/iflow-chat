@@ -785,3 +785,157 @@ class TestACPPortManagement:
         assert ports[0] == 8093
         assert ports[1] == 8092
         assert ports[2] == 8091
+
+
+# ============= feat-043: ACP 进程管理测试 =============
+
+class TestACPProcessManagement:
+    """ACP 进程启动与停止测试"""
+    
+    def setup_method(self):
+        """每个测试方法前清理状态"""
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
+    def teardown_method(self):
+        """每个测试方法后清理状态"""
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
+    @pytest.mark.asyncio
+    async def test_start_acp_process_success(self):
+        """测试进程启动成功 - 带 --stream 参数"""
+        port = 8095
+        
+        # Mock asyncio.create_subprocess_exec
+        mock_process = AsyncMock()
+        mock_process.pid = 12345
+        mock_process.returncode = None  # 进程运行中
+        
+        with patch('asyncio.create_subprocess_exec', return_value=mock_process):
+            with patch.object(IFlowClientService, '_is_port_available', return_value=False):  # 端口已被占用表示进程启动成功
+                process = await IFlowClientService._start_acp_process(port)
+        
+        # 验证进程已保存
+        assert port in IFlowClientService._port_processes
+        assert IFlowClientService._port_processes[port] == mock_process
+        assert process == mock_process
+    
+    @pytest.mark.asyncio
+    async def test_start_acp_process_timeout(self):
+        """测试进程启动超时"""
+        port = 8096
+        
+        # Mock asyncio.create_subprocess_exec
+        mock_process = AsyncMock()
+        mock_process.pid = 12346
+        mock_process.returncode = None
+        mock_process.terminate = AsyncMock()
+        mock_process.kill = AsyncMock()
+        mock_process.wait = AsyncMock()
+        
+        with patch('asyncio.create_subprocess_exec', return_value=mock_process):
+            with patch.object(IFlowClientService, '_is_port_available', return_value=True):  # 端口始终可用表示进程未启动成功
+                with pytest.raises(TimeoutError) as exc_info:
+                    await IFlowClientService._start_acp_process(port)
+        
+        assert "超时" in str(exc_info.value) or "timeout" in str(exc_info.value).lower()
+    
+    @pytest.mark.asyncio
+    async def test_stop_acp_process_graceful(self):
+        """测试进程优雅终止"""
+        port = 8097
+        
+        # 创建模拟进程
+        mock_process = AsyncMock()
+        mock_process.pid = 12347
+        mock_process.returncode = None  # 进程运行中
+        mock_process.wait = AsyncMock(return_value=0)  # 正常退出
+        mock_process.terminate = AsyncMock()
+        mock_process.kill = AsyncMock()
+        
+        # 添加进程到管理字典
+        IFlowClientService._port_processes[port] = mock_process
+        IFlowClientService._used_ports.add(port)
+        
+        await IFlowClientService._stop_acp_process(port)
+        
+        # 验证调用了 terminate
+        mock_process.terminate.assert_called_once()
+        # 验证调用了 wait
+        mock_process.wait.assert_called_once()
+        # 验证未调用 kill（优雅退出成功）
+        mock_process.kill.assert_not_called()
+        # 验证进程已从字典移除
+        assert port not in IFlowClientService._port_processes
+        assert port not in IFlowClientService._used_ports
+    
+    @pytest.mark.asyncio
+    async def test_stop_acp_process_force_kill(self):
+        """测试进程强制终止（优雅终止超时后）"""
+        port = 8098
+        
+        # 创建模拟进程 - 不响应 terminate
+        mock_process = AsyncMock()
+        mock_process.pid = 12348
+        mock_process.returncode = None  # 进程运行中
+        # wait 第一次返回超时，第二次返回退出码（模拟强制 kill 后）
+        mock_process.wait = AsyncMock(side_effect=[asyncio.TimeoutError(), 0])
+        mock_process.terminate = AsyncMock()
+        mock_process.kill = AsyncMock()
+        
+        # 添加进程到管理字典
+        IFlowClientService._port_processes[port] = mock_process
+        IFlowClientService._used_ports.add(port)
+        
+        await IFlowClientService._stop_acp_process(port)
+        
+        # 验证调用了 terminate
+        mock_process.terminate.assert_called_once()
+        # 验证调用了 kill
+        mock_process.kill.assert_called_once()
+        # 验证进程已从字典移除
+        assert port not in IFlowClientService._port_processes
+        assert port not in IFlowClientService._used_ports
+    
+    @pytest.mark.asyncio
+    async def test_stop_acp_process_already_terminated(self):
+        """测试停止已终止的进程"""
+        port = 8099
+        
+        # 创建模拟进程 - 已经终止
+        mock_process = AsyncMock()
+        mock_process.pid = 12349
+        mock_process.returncode = 0  # 进程已终止
+        mock_process.terminate = AsyncMock()
+        mock_process.kill = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+        
+        # 添加进程到管理字典
+        IFlowClientService._port_processes[port] = mock_process
+        IFlowClientService._used_ports.add(port)
+        
+        await IFlowClientService._stop_acp_process(port)
+        
+        # 验证未调用 terminate（进程已终止）
+        mock_process.terminate.assert_not_called()
+        mock_process.kill.assert_not_called()
+        # 验证进程已从字典移除
+        assert port not in IFlowClientService._port_processes
+        assert port not in IFlowClientService._used_ports
+    
+    @pytest.mark.asyncio
+    async def test_stop_acp_process_not_exist(self):
+        """测试停止不存在的进程"""
+        port = 8100
+        
+        # 该端口没有对应的进程
+        assert port not in IFlowClientService._port_processes
+        
+        # 应该不会抛出异常
+        await IFlowClientService._stop_acp_process(port)
+        
+        # 验证状态未改变
+        assert port not in IFlowClientService._port_processes

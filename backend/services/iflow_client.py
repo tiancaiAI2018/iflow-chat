@@ -460,6 +460,130 @@ class IFlowClientService:
         cls._used_ports.discard(port)
         logger.debug(f"Removed port {port} from used ports")
     
+    @classmethod
+    async def _start_acp_process(cls, port: int) -> asyncio.subprocess.Process:
+        """
+        启动 ACP 进程
+        使用 asyncio.create_subprocess_exec 启动 'iflow --experimental-acp --stream --port {port}' 命令
+        
+        Args:
+            port: 端口号
+        
+        Returns:
+            asyncio.subprocess.Process: 启动的进程对象
+        
+        Raises:
+            TimeoutError: 当进程启动超时时抛出
+            RuntimeError: 当进程启动失败时抛出
+        """
+        cmd = [
+            "iflow",
+            "--experimental-acp",
+            "--stream",
+            "--port", str(port),
+        ]
+        
+        logger.info(f"Starting ACP process on port {port}: {' '.join(cmd)}")
+        
+        try:
+            # 启动进程
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            
+            logger.info(f"ACP process started with PID {process.pid} on port {port}")
+            
+            # 保存进程到管理字典
+            cls._port_processes[port] = process
+            
+            # 等待进程就绪（通过检查端口是否被占用）
+            start_time = asyncio.get_event_loop().time()
+            while asyncio.get_event_loop().time() - start_time < settings.ACP_STARTUP_TIMEOUT:
+                # 检查进程是否还在运行
+                if process.returncode is not None:
+                    raise RuntimeError(f"ACP process exited prematurely with code {process.returncode}")
+                
+                # 检查端口是否被占用（表示服务已启动）
+                if not cls._is_port_available(port):
+                    logger.info(f"ACP process on port {port} is ready")
+                    return process
+                
+                await asyncio.sleep(0.1)
+            
+            # 超时，终止进程并清理
+            logger.error(f"ACP process on port {port} startup timeout after {settings.ACP_STARTUP_TIMEOUT}s")
+            try:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                try:
+                    process.kill()
+                    await process.wait()
+                except ProcessLookupError:
+                    pass
+            
+            # 清理
+            cls._port_processes.pop(port, None)
+            cls._used_ports.discard(port)
+            
+            raise TimeoutError(f"ACP process startup timeout after {settings.ACP_STARTUP_TIMEOUT} seconds")
+            
+        except Exception as e:
+            # 清理
+            cls._port_processes.pop(port, None)
+            cls._used_ports.discard(port)
+            
+            if isinstance(e, (TimeoutError, RuntimeError)):
+                raise
+            raise RuntimeError(f"Failed to start ACP process on port {port}: {e}")
+    
+    @classmethod
+    async def _stop_acp_process(cls, port: int) -> None:
+        """
+        停止 ACP 进程
+        先 terminate 优雅终止，超时后 kill 强制终止，清理 _port_processes 字典
+        
+        Args:
+            port: 端口号
+        """
+        process = cls._port_processes.get(port)
+        
+        if process is None:
+            logger.debug(f"No ACP process found on port {port}")
+            return
+        
+        logger.info(f"Stopping ACP process on port {port} (PID: {process.pid})")
+        
+        try:
+            # 检查进程是否还在运行
+            if process.returncode is not None:
+                logger.debug(f"ACP process on port {port} already terminated with code {process.returncode}")
+            else:
+                # 先尝试优雅终止
+                try:
+                    process.terminate()
+                    # 等待进程退出（最多2秒）
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
+                    logger.info(f"ACP process on port {port} terminated gracefully")
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    # 优雅终止超时，强制 kill
+                    try:
+                        process.kill()
+                        await process.wait()
+                        logger.info(f"ACP process on port {port} killed forcefully")
+                    except ProcessLookupError:
+                        logger.debug(f"ACP process on port {port} already exited")
+            
+        except Exception as e:
+            logger.error(f"Error stopping ACP process on port {port}: {e}")
+        finally:
+            # 清理管理字典
+            cls._port_processes.pop(port, None)
+            cls._used_ports.discard(port)
+            logger.debug(f"Cleaned up port {port} from process management")
+    
     async def reconnect(self) -> bool:
         """
         重新连接
