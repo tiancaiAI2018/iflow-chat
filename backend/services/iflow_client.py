@@ -192,7 +192,14 @@ class IFlowClientService:
     iFlow SDK 封装服务
     提供 WebSocket 连接管理、流式对话处理、工具调用消息解析、自动重连
     包含服务可用性检测和错误恢复
+    支持 ACP 进程手动管理（带 --stream 参数）
     """
+    
+    # ACP 进程管理类属性
+    _port_processes: Dict[int, asyncio.subprocess.Process] = {}  # port -> process
+    _user_ports: Dict[int, list] = {}  # user_id -> [port_new, port_old, ...] 端口栈
+    _used_ports: set = set()  # 已使用的端口集合
+    _lock: asyncio.Lock = asyncio.Lock()  # 端口分配锁
     
     def __init__(
         self,
@@ -334,6 +341,124 @@ class IFlowClientService:
             finally:
                 self._client = None
                 self._is_connected = False
+    
+    # ==================== ACP 端口管理方法 ====================
+    
+    @classmethod
+    def _is_port_available(cls, port: int) -> bool:
+        """
+        检查端口是否可用（未被占用）
+        
+        Args:
+            port: 端口号
+        
+        Returns:
+            bool: 是否可用
+        """
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                result = s.connect_ex(('localhost', port))
+                return result != 0  # 如果连接失败（端口未被占用），返回 True
+        except Exception:
+            return False
+    
+    @classmethod
+    async def _find_available_port(cls, user_id: int) -> int:
+        """
+        查找可用端口
+        基于用户 ID 和端口范围查找可用端口，支持重试机制
+        
+        Args:
+            user_id: 用户 ID
+        
+        Returns:
+            int: 可用端口号
+        
+        Raises:
+            RuntimeError: 当无法分配端口时抛出
+        """
+        async with cls._lock:
+            for i in range(settings.ACP_MAX_PORT_RETRIES):
+                # 基于用户 ID 和尝试次数计算端口
+                port_range = settings.ACP_PORT_END - settings.ACP_PORT_START + 1
+                base = settings.ACP_PORT_START + ((user_id * 10 + i) % port_range)
+                port = base
+                
+                if port not in cls._used_ports and cls._is_port_available(port):
+                    cls._used_ports.add(port)
+                    logger.info(f"Assigned port {port} for user {user_id} (attempt {i + 1})")
+                    return port
+                
+                logger.debug(f"Port {port} not available for user {user_id}, retrying...")
+            
+            raise RuntimeError(f"系统繁忙，无法为用户 {user_id} 分配端口，请稍后重试")
+    
+    @classmethod
+    def _push_user_port(cls, user_id: int, port: int) -> None:
+        """
+        将端口压入用户端口栈（栈顶为最新端口）
+        
+        Args:
+            user_id: 用户 ID
+            port: 端口号
+        """
+        if user_id not in cls._user_ports:
+            cls._user_ports[user_id] = []
+        cls._user_ports[user_id].insert(0, port)  # 栈顶插入
+        logger.debug(f"Pushed port {port} to user {user_id} stack: {cls._user_ports[user_id]}")
+    
+    @classmethod
+    def _pop_user_port(cls, user_id: int, port: int) -> bool:
+        """
+        从用户端口栈中移除指定端口
+        
+        Args:
+            user_id: 用户 ID
+            port: 端口号
+        
+        Returns:
+            bool: 是否成功移除
+        """
+        if user_id in cls._user_ports and port in cls._user_ports[user_id]:
+            cls._user_ports[user_id].remove(port)
+            cls._used_ports.discard(port)
+            logger.debug(f"Popped port {port} from user {user_id} stack: {cls._user_ports[user_id]}")
+            return True
+        return False
+    
+    @classmethod
+    def _get_user_ports(cls, user_id: int) -> list:
+        """
+        获取用户端口栈（栈顶为最新端口）
+        
+        Args:
+            user_id: 用户 ID
+        
+        Returns:
+            list: 端口列表，栈顶在索引 0
+        """
+        return cls._user_ports.get(user_id, []).copy()
+    
+    @classmethod
+    def _remove_user_port(cls, user_id: int, port: int) -> None:
+        """
+        从用户端口栈中移除指定端口，并清理已使用端口集合
+        
+        Args:
+            user_id: 用户 ID
+            port: 端口号
+        """
+        if user_id in cls._user_ports:
+            if port in cls._user_ports[user_id]:
+                cls._user_ports[user_id].remove(port)
+                logger.debug(f"Removed port {port} from user {user_id} stack")
+            # 如果端口栈为空，删除用户条目
+            if not cls._user_ports[user_id]:
+                del cls._user_ports[user_id]
+                logger.debug(f"Removed empty port stack for user {user_id}")
+        cls._used_ports.discard(port)
+        logger.debug(f"Removed port {port} from used ports")
     
     async def reconnect(self) -> bool:
         """

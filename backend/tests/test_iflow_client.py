@@ -3,6 +3,7 @@ iFlow SDK 封装服务测试
 """
 import pytest
 import asyncio
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 from backend.services.iflow_client import (
     IFlowClientService,
@@ -11,6 +12,7 @@ from backend.services.iflow_client import (
     get_iflow_client,
     close_iflow_client,
 )
+from backend.config import settings
 
 
 class TestChatMessage:
@@ -605,3 +607,181 @@ class TestIsConnected:
         client._is_connected = False
         
         assert client.is_connected is False
+
+
+# ============= feat-042: ACP 端口管理测试 =============
+
+class TestACPPortManagement:
+    """ACP 端口管理测试"""
+    
+    def setup_method(self):
+        """每个测试方法前清理状态"""
+        # 清理类属性状态
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
+    def teardown_method(self):
+        """每个测试方法后清理状态"""
+        # 清理类属性状态
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
+    def test_class_attributes_exist(self):
+        """测试类属性存在性"""
+        assert hasattr(IFlowClientService, '_port_processes')
+        assert hasattr(IFlowClientService, '_user_ports')
+        assert hasattr(IFlowClientService, '_used_ports')
+        assert hasattr(IFlowClientService, '_lock')
+        assert isinstance(IFlowClientService._lock, asyncio.Lock)
+    
+    def test_is_port_available_true(self):
+        """测试端口可用检查 - 端口空闲"""
+        # 使用一个不太可能被占用的端口
+        port = 19999
+        result = IFlowClientService._is_port_available(port)
+        assert result is True
+    
+    def test_is_port_available_false(self):
+        """测试端口可用检查 - 端口被占用"""
+        # 创建一个临时 socket 占用端口
+        test_port = 19998
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('localhost', test_port))
+            s.listen(1)
+            
+            result = IFlowClientService._is_port_available(test_port)
+            assert result is False
+    
+    @pytest.mark.asyncio
+    async def test_find_available_port_success(self):
+        """测试查找可用端口 - 成功场景"""
+        user_id = 123
+        
+        port = await IFlowClientService._find_available_port(user_id)
+        
+        # 验证端口在配置范围内
+        assert settings.ACP_PORT_START <= port <= settings.ACP_PORT_END
+        # 验证端口已标记为使用
+        assert port in IFlowClientService._used_ports
+    
+    @pytest.mark.asyncio
+    async def test_find_available_port_multiple_users(self):
+        """测试查找可用端口 - 多个用户"""
+        user1_id = 100
+        user2_id = 200
+        
+        port1 = await IFlowClientService._find_available_port(user1_id)
+        port2 = await IFlowClientService._find_available_port(user2_id)
+        
+        # 验证两个端口不同
+        assert port1 != port2
+        # 验证都在配置范围内
+        assert settings.ACP_PORT_START <= port1 <= settings.ACP_PORT_END
+        assert settings.ACP_PORT_START <= port2 <= settings.ACP_PORT_END
+    
+    @pytest.mark.asyncio
+    async def test_find_available_port_exhausted(self):
+        """测试查找可用端口 - 端口耗尽场景"""
+        user_id = 999
+        
+        # 模拟所有端口都被占用
+        original_used_ports = IFlowClientService._used_ports.copy()
+        IFlowClientService._used_ports = set(range(settings.ACP_PORT_START, settings.ACP_PORT_END + 1))
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            await IFlowClientService._find_available_port(user_id)
+        
+        assert "系统繁忙" in str(exc_info.value)
+        
+        # 恢复状态
+        IFlowClientService._used_ports = original_used_ports
+    
+    def test_push_user_port(self):
+        """测试端口入栈"""
+        user_id = 100
+        port1 = 8091
+        port2 = 8092
+        
+        # 入栈第一个端口
+        IFlowClientService._push_user_port(user_id, port1)
+        assert IFlowClientService._user_ports[user_id] == [8091]
+        
+        # 入栈第二个端口（应该在栈顶）
+        IFlowClientService._push_user_port(user_id, port2)
+        assert IFlowClientService._user_ports[user_id] == [8092, 8091]
+    
+    def test_get_user_ports(self):
+        """测试获取用户端口栈"""
+        user_id = 100
+        port1 = 8091
+        port2 = 8092
+        
+        # 空栈
+        assert IFlowClientService._get_user_ports(user_id) == []
+        
+        # 入栈后
+        IFlowClientService._push_user_port(user_id, port1)
+        IFlowClientService._push_user_port(user_id, port2)
+        
+        ports = IFlowClientService._get_user_ports(user_id)
+        assert ports == [8092, 8091]
+    
+    def test_pop_user_port(self):
+        """测试端口出栈"""
+        user_id = 100
+        port1 = 8091
+        port2 = 8092
+        
+        IFlowClientService._push_user_port(user_id, port1)
+        IFlowClientService._push_user_port(user_id, port2)
+        IFlowClientService._used_ports.add(port1)
+        IFlowClientService._used_ports.add(port2)
+        
+        # 移除端口
+        result = IFlowClientService._pop_user_port(user_id, port1)
+        assert result is True
+        assert IFlowClientService._user_ports[user_id] == [8092]
+        assert port1 not in IFlowClientService._used_ports
+        
+        # 移除不存在的端口
+        result = IFlowClientService._pop_user_port(user_id, 9999)
+        assert result is False
+    
+    def test_remove_user_port(self):
+        """测试移除用户端口"""
+        user_id = 100
+        port1 = 8091
+        port2 = 8092
+        
+        IFlowClientService._push_user_port(user_id, port1)
+        IFlowClientService._push_user_port(user_id, port2)
+        IFlowClientService._used_ports.add(port1)
+        IFlowClientService._used_ports.add(port2)
+        
+        # 移除端口
+        IFlowClientService._remove_user_port(user_id, port1)
+        assert IFlowClientService._user_ports[user_id] == [8092]
+        assert port1 not in IFlowClientService._used_ports
+        
+        # 移除最后一个端口，栈应该被删除
+        IFlowClientService._remove_user_port(user_id, port2)
+        assert user_id not in IFlowClientService._user_ports
+        assert port2 not in IFlowClientService._used_ports
+    
+    def test_port_stack_order(self):
+        """测试端口栈顺序 - 栈顶为最新"""
+        user_id = 100
+        
+        # 模拟多次连接
+        IFlowClientService._push_user_port(user_id, 8091)
+        IFlowClientService._push_user_port(user_id, 8092)
+        IFlowClientService._push_user_port(user_id, 8093)
+        
+        ports = IFlowClientService._get_user_ports(user_id)
+        # 栈顶（最新）应该在索引 0
+        assert ports[0] == 8093
+        assert ports[1] == 8092
+        assert ports[2] == 8091
