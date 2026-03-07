@@ -6,8 +6,32 @@
 PROJECT_DIR="/root/.iflow-bot/workspace/mybot"
 BACKEND_LOG="$PROJECT_DIR/backend.log"
 FRONTEND_LOG="$PROJECT_DIR/frontend.log"
+IFLOW_LOG="$PROJECT_DIR/iflow.log"
 BACKEND_PORT=8000
 FRONTEND_PORT=3000
+IFLOW_PORT=8090
+
+start_iflow() {
+    echo "启动 iFlow 服务..."
+    # 先检查是否已运行
+    if ss -tlnp | grep -q ":$IFLOW_PORT "; then
+        echo "✅ iFlow 服务已在运行 (端口 $IFLOW_PORT)"
+        return
+    fi
+    nohup iflow --experimental-acp --port $IFLOW_PORT --stream > "$IFLOW_LOG" 2>&1 &
+    sleep 3
+    if ss -tlnp | grep -q ":$IFLOW_PORT "; then
+        echo "✅ iFlow 服务启动成功 (端口 $IFLOW_PORT, 流式模式)"
+    else
+        echo "❌ iFlow 服务启动失败，查看日志: $IFLOW_LOG"
+    fi
+}
+
+stop_iflow() {
+    echo "停止 iFlow 服务..."
+    pkill -f "iflow.*$IFLOW_PORT" 2>/dev/null
+    echo "✅ iFlow 服务已停止"
+}
 
 start_backend() {
     echo "启动后端服务..."
@@ -51,6 +75,13 @@ check_status() {
     echo "检查服务状态..."
     echo ""
     
+    # 检查 iFlow
+    if ss -tlnp | grep -q ":$IFLOW_PORT "; then
+        echo "✅ iFlow 服务运行中 (端口 $IFLOW_PORT)"
+    else
+        echo "❌ iFlow 服务未运行"
+    fi
+    
     # 检查后端
     if curl -s http://localhost:$BACKEND_PORT/docs -o /dev/null 2>/dev/null; then
         echo "✅ 后端服务运行中 (端口 $BACKEND_PORT)"
@@ -68,17 +99,21 @@ check_status() {
 
 case "$1" in
     start)
+        start_iflow
         start_backend
         start_frontend
         ;;
     stop)
         stop_backend
         stop_frontend
+        stop_iflow
         ;;
     restart)
         stop_backend
         stop_frontend
+        stop_iflow
         sleep 2
+        start_iflow
         start_backend
         start_frontend
         ;;

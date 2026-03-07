@@ -1,8 +1,22 @@
-# Redis + EventBus 消息解耦方案
+# ACP 进程管理改造方案
 
 ## 背景问题
 
-移动端 WebSocket 连接不稳定，切屏时经常断开，导致 AI 输出内容丢失。
+iFlow SDK 自启动模式不支持 `--stream` 参数，导致 AI 响应不是流式输出，而是一次性返回完整内容。
+
+**根本原因**：
+- SDK `process_manager.py:175` 硬编码启动命令：`[iflow, "--experimental-acp", "--port", port]`
+- 缺少 `--stream` 参数
+- `IFlowOptions` 无 `process_args` 配置项
+
+## 解决方案
+
+放弃 SDK 自动启动，改为手动管理 ACP 进程：
+1. 连接前手动启动带 `--stream` 的 ACP 进程
+2. SDK 使用 `auto_start_process=False` 连接已有服务
+3. 断开时清理 ACP 进程
+
+---
 
 ## 架构设计
 
@@ -10,318 +24,69 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              输入层 (Input Handlers)                         │
+│                           IFlowClientService                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   WebSocket 输入     ─────┐                                                  │
-│                              │                                                │
-│   (未来) HTTP API    ─────┼──→  EventBus.emit('user_message', data)        │
-│                              │                                                │
-│   (未来) MQTT       ─────┘                                                  │
-│                                                                              │
+│                                                                             │
+│   connect()                                                                 │
+│       │                                                                     │
+│       ├── 1. 查找可用端口（最多重试 10 次）                                   │
+│       │                                                                     │
+│       ├── 2. 启动 ACP 进程                                                   │
+│       │       iflow --experimental-acp --stream --port {port}              │
+│       │                                                                     │
+│       ├── 3. 端口入栈                                                        │
+│       │       _user_ports[user_id] = [port_new, port_old, ...]             │
+│       │                                                                     │
+│       └── 4. SDK 连接                                                        │
+│               IFlowOptions(url="ws://localhost:{port}/acp",                │
+│                           auto_start_process=False)                        │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
                                         │
                                         ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           业务处理层 (Business Logic)                        │
+│                           断开逻辑                                          │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   EventBus.on('user_message') → iFlow Client → 流式响应                    │
-│                                          │                                   │
-│                                          ▼                                   │
-│                              EventBus.emit('ai_response', chunk)           │
-│                              EventBus.emit('ai_complete', full_response)   │
-│                                                                              │
+│                                                                             │
+│   TaskFinishMessage 到达时：                                                 │
+│       │                                                                     │
+│       ├── 端口栈长度 = 1                                                     │
+│       │       → 不断开，保持连接                                             │
+│       │                                                                     │
+│       ├── 端口栈长度 > 1 且当前端口不是栈顶                                    │
+│       │       → 断开当前端口（旧的 ACP）                                      │
+│       │       → 从栈中移除                                                   │
+│       │                                                                     │
+│       └── 当前端口是栈顶（最新的）                                            │
+│               → 不断开                                                       │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              输出层 (Output Handlers)                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   Redis Publisher   ←── EventBus.on('ai_response')  ←── 流式 chunks       │
-│         │                        │                                           │
-│         │                        └── EventBus.on('ai_complete')             │
-│         │                              │                                     │
-│         │                              ▼                                     │
-│         │                         DB 存储完整响应                            │
-│         │                                                                    │
-│         ▼                                                                    │
-│   Redis Stream: user:{user_id}:messages                                     │
-│         │                                                                    │
-│         ▼                                                                    │
-│   WebSocket 订阅 Redis → 推送给前端                                          │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 端口栈管理
+
+```
+用户 A 端口栈：
+  连接1: [8091]           → TaskFinishMessage → 不变（只有一个）
+  连接2: [8092, 8091]     → 8091 输出完 → [8092]
+  连接3: [8093, 8092, 8091] → 8091 输出完 → [8093, 8092]
+
+用户 B 端口栈：
+  连接1: [8094]           → 保持
 ```
 
 ---
 
-## Redis 安装部署
-
-### 1. 版本选择
-
-| 项目 | 版本 | 说明 |
-|------|------|------|
-| Redis Server | **7.2.x** | 当前稳定版，性能优化好，内存占用低 |
-| Python 客户端 | `redis[asyncio] >= 5.0.0` | 支持异步操作 |
-| blinker | `>= 1.7.0` | Flask 同款信号库，轻量稳定 |
-
-### 2. 安装步骤
-
-#### 2.1 安装 Redis Server
-
-```bash
-# 方式一：yum 安装（OpenCloudOS 兼容）
-sudo yum install redis -y
-
-# 方式二：源码编译（推荐，版本更新）
-cd /tmp
-wget https://download.redis.io/releases/redis-7.2.4.tar.gz
-tar xzf redis-7.2.4.tar.gz
-cd redis-7.2.4
-make
-sudo make install PREFIX=/usr/local/redis
-```
-
-#### 2.2 创建配置文件
-
-```bash
-sudo mkdir -p /etc/redis
-sudo mkdir -p /var/lib/redis
-sudo mkdir -p /var/log/redis
-
-# 创建配置文件
-sudo tee /etc/redis/redis.conf << 'EOF'
-# 基础配置
-bind 127.0.0.1
-port 6379
-daemonize yes
-pidfile /var/run/redis/redis-server.pid
-logfile /var/log/redis/redis.log
-dir /var/lib/redis
-
-# 内存限制（关键！）
-maxmemory 32mb
-maxmemory-policy allkeys-lru
-
-# 持久化（可选，断电不丢数据）
-# appendonly yes
-# appendfsync everysec
-
-# 性能优化
-tcp-backlog 511
-timeout 0
-tcp-keepalive 300
-
-# 安全（可选，生产环境建议设置密码）
-# requirepass your_strong_password_here
-EOF
-```
-
-#### 2.3 创建 systemd 服务
-
-```bash
-sudo tee /etc/systemd/system/redis.service << 'EOF'
-[Unit]
-Description=Redis In-Memory Data Store
-After=network.target
-
-[Service]
-Type=forking
-ExecStart=/usr/bin/redis-server /etc/redis/redis.conf
-ExecStop=/usr/bin/redis-cli shutdown
-Restart=always
-RestartSec=5
-User=root
-Group=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# 重载 systemd
-sudo systemctl daemon-reload
-
-# 启动并设置开机自启
-sudo systemctl start redis
-sudo systemctl enable redis
-
-# 验证
-redis-cli ping  # 应返回 PONG
-```
-
-#### 2.4 安装 Python 依赖
-
-```bash
-cd /root/.iflow-bot/workspace/mybot/backend
-pip install "redis[asyncio]>=5.0.0" "blinker>=1.7.0"
-```
-
-### 3. 部署后验证
-
-```bash
-# 检查服务状态
-sudo systemctl status redis
-
-# 检查内存配置
-redis-cli CONFIG GET maxmemory
-
-# 检查内存淘汰策略
-redis-cli CONFIG GET maxmemory-policy
-
-# 测试基本操作
-redis-cli SET test_key "hello"
-redis-cli GET test_key
-redis-cli DEL test_key
-```
-
-### 4. 资源占用预估
-
-| 指标 | 预估值 | 说明 |
-|------|--------|------|
-| 进程内存 | ~8-12 MB | 空闲状态 |
-| 数据内存 | ≤32 MB | 受 maxmemory 限制 |
-| 总内存 | ~40-45 MB | 进程 + 数据 |
-| CPU | < 1% | 空闲时几乎为 0 |
-| 磁盘 | < 1 MB | 无持久化时 |
-
-### 5. 运维命令
-
-```bash
-# 查看内存使用
-redis-cli INFO memory
-
-# 查看当前连接数
-redis-cli INFO clients
-
-# 查看所有 key
-redis-cli KEYS "*"
-
-# 清空所有数据（慎用）
-redis-cli FLUSHALL
-
-# 监控实时命令
-redis-cli MONITOR
-
-# 查看日志
-tail -f /var/log/redis/redis.log
-```
-
----
-
-## 核心组件设计
-
-### 1. EventBus (使用 blinker)
+## 配置项
 
 ```python
-# services/event_bus.py
-from blinker import Signal
+# backend/config.py
 
-class EventBus:
-    # 信号定义
-    user_message = Signal('user_message')      # 用户输入
-    ai_response = Signal('ai_response')        # AI 流式响应
-    ai_complete = Signal('ai_complete')        # AI 响应完成
-    
-    @classmethod
-    def emit(cls, signal_name: str, sender=None, **kwargs):
-        """发射信号"""
-        signal = getattr(cls, signal_name)
-        signal.send(sender, **kwargs)
-    
-    @classmethod
-    def on(cls, signal_name: str):
-        """订阅信号装饰器"""
-        signal = getattr(cls, signal_name)
-        return signal.connect
-```
-
-### 2. Redis 配置（轻量级）
-
-```python
-# config.py 新增
-REDIS_URL = "redis://localhost:6379/0"
-REDIS_MAX_MEMORY = "32mb"        # 限制最大内存
-REDIS_MESSAGE_TTL = 300          # 消息保留 5 分钟
-```
-
-### 3. 消息缓冲服务
-
-```python
-# services/message_buffer.py
-import redis.asyncio as redis
-import json
-
-class MessageBuffer:
-    def __init__(self, redis_url: str):
-        self.redis = redis.from_url(redis_url)
-    
-    async def push(self, user_id: int, message: dict):
-        """推送消息到用户队列"""
-        key = f"user:{user_id}:messages"
-        await self.redis.xadd(key, {"data": json.dumps(message)})
-        await self.redis.expire(key, 300)  # 5分钟过期
-    
-    async def consume(self, user_id: int, count: int = 10):
-        """消费未读消息"""
-        key = f"user:{user_id}:messages"
-        messages = await self.redis.xread({key: "0"}, count=count)
-        if messages:
-            # 返回消息并删除
-            ids = [msg[0] for msg in messages[0][1]]
-            await self.redis.xdel(key, *ids)
-        return messages
-    
-    async def get_pending(self, user_id: int):
-        """获取待推送消息（重连恢复用）"""
-        key = f"user:{user_id}:messages"
-        return await self.redis.xread({key: "0"}, count=50)
-```
-
-### 4. 输入输出组件解耦
-
-```python
-# services/input_handlers/websocket_input.py
-class WebSocketInputHandler:
-    """WebSocket 输入处理器"""
-    
-    def __init__(self):
-        EventBus.user_message.connect(self._on_user_message)
-    
-    async def handle(self, user_id: int, content: str, conversation_id: int):
-        # 只负责发射事件，不关心后续处理
-        EventBus.emit('user_message', user_id=user_id, 
-                     content=content, conversation_id=conversation_id)
-
-
-# services/output_handlers/redis_output.py
-class RedisOutputHandler:
-    """Redis 输出处理器"""
-    
-    def __init__(self, buffer: MessageBuffer):
-        self.buffer = buffer
-        # 订阅 AI 响应事件
-        EventBus.ai_response.connect(self._on_ai_response)
-        EventBus.ai_complete.connect(self._on_ai_complete)
-    
-    async def _on_ai_response(self, sender, **kwargs):
-        """流式推送"""
-        await self.buffer.push(kwargs['user_id'], {
-            'type': 'stream',
-            'content': kwargs['content'],
-            'is_delta': True
-        })
-    
-    async def _on_ai_complete(self, sender, **kwargs):
-        """完成后存 DB + 推送完成标记"""
-        # 存储到数据库
-        await save_to_db(kwargs)
-        # 推送完成标记
-        await self.buffer.push(kwargs['user_id'], {
-            'type': 'complete',
-            'content': kwargs['content']
-        })
+# ACP 进程管理配置
+ACP_PORT_START: int = 8091        # 端口起始
+ACP_PORT_END: int = 9000          # 端口结束（支持约 900 个并发）
+ACP_MAX_PORT_RETRIES: int = 10    # 每次分配端口时最大重试次数
+ACP_STARTUP_TIMEOUT: float = 5.0  # 进程启动超时（秒）
 ```
 
 ---
@@ -330,60 +95,164 @@ class RedisOutputHandler:
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `backend/requirements.txt` | 修改 | 添加 `redis`、`blinker` |
-| `backend/config.py` | 修改 | 添加 Redis 配置 |
-| `backend/services/event_bus.py` | 新建 | EventBus 信号定义 |
-| `backend/services/message_buffer.py` | 新建 | Redis 消息缓冲 |
-| `backend/services/input_handlers/__init__.py` | 新建 | 输入处理器模块 |
-| `backend/services/input_handlers/websocket_input.py` | 新建 | WebSocket 输入适配器 |
-| `backend/services/output_handlers/__init__.py` | 新建 | 输出处理器模块 |
-| `backend/services/output_handlers/redis_output.py` | 新建 | Redis 输出适配器 |
-| `backend/services/output_handlers/db_output.py` | 新建 | 数据库输出适配器 |
-| `backend/routers/websocket.py` | 修改 | 接入 EventBus |
-| `backend/main.py` | 修改 | 初始化 Redis 连接 |
-| `frontend/src/contexts/ChatContext.tsx` | 修改 | 重连后从 Redis 拉取消息 |
+| `backend/config.py` | 修改 | 添加 ACP 进程配置项 |
+| `backend/services/iflow_client.py` | 修改 | 集成 ACP 进程管理逻辑 |
 
 ---
 
-## 实施步骤
+## 核心代码设计
 
-### Phase 1: Redis 安装部署
-- [ ] 安装 Redis Server（yum 或源码编译）
-- [ ] 创建配置文件 `/etc/redis/redis.conf`
-- [ ] 配置 systemd 服务，开机自启
-- [ ] 安装 Python 依赖：`redis[asyncio]`、`blinker`
+### 1. 类属性
 
-### Phase 2: 后端核心模块
-- [ ] 创建 `services/event_bus.py` - EventBus 信号定义
-- [ ] 创建 `services/message_buffer.py` - Redis 消息缓冲
-- [ ] 修改 `config.py` - 添加 Redis 配置
-- [ ] 修改 `requirements.txt` - 添加依赖
+```python
+class IFlowClientService:
+    # ACP 进程管理
+    _port_processes: Dict[int, asyncio.subprocess.Process] = {}  # port -> process
+    _user_ports: Dict[int, List[int]] = {}  # user_id -> [port_new, port_old, ...]
+    _used_ports: Set[int] = set()  # 已使用的端口集合
+    _lock: asyncio.Lock = asyncio.Lock()  # 端口分配锁
+```
 
-### Phase 3: 输入输出处理器
-- [ ] 创建 `services/input_handlers/__init__.py`
-- [ ] 创建 `services/input_handlers/websocket_input.py`
-- [ ] 创建 `services/output_handlers/__init__.py`
-- [ ] 创建 `services/output_handlers/redis_output.py`
-- [ ] 创建 `services/output_handlers/db_output.py`
+### 2. 端口查找
 
-### Phase 4: 集成改造
-- [ ] 修改 `routers/websocket.py` - 接入 EventBus
-- [ ] 修改 `main.py` - 初始化 Redis 连接和处理器
+```python
+async def _find_available_port(self, user_id: int) -> int:
+    """查找可用端口"""
+    async with self._lock:
+        for i in range(config.ACP_MAX_PORT_RETRIES):
+            # 基于用户 ID 和尝试次数计算端口
+            base = config.ACP_PORT_START + (user_id * 10) + i
+            port = base % (config.ACP_PORT_END - config.ACP_PORT_START + 1) + config.ACP_PORT_START
+            
+            if port not in self._used_ports and self._is_port_available(port):
+                self._used_ports.add(port)
+                return port
+        
+        raise RuntimeError("系统繁忙，无法分配端口")
+```
 
-### Phase 5: 前端改造
-- [ ] 修改 `ChatContext.tsx` - 重连后从 Redis 拉取消息
-- [ ] 添加 API 接口调用获取待消费消息
+### 3. 启动 ACP 进程
 
-### Phase 6: 测试验证
-- [ ] 单元测试：EventBus、MessageBuffer
-- [ ] 集成测试：断线重连场景
-- [ ] 压力测试：并发消息处理
+```python
+async def _start_acp_process(self, port: int) -> bool:
+    """启动 ACP 进程"""
+    cmd = ["iflow", "--experimental-acp", "--stream", "--port", str(port)]
+    
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.DEVNULL
+    )
+    
+    self._port_processes[port] = process
+    
+    # 等待进程就绪
+    await asyncio.sleep(2.0)
+    
+    if process.returncode is not None:
+        raise RuntimeError(f"ACP 进程启动失败")
+    
+    return True
+```
+
+### 4. 连接流程
+
+```python
+async def connect(self) -> None:
+    """连接到 iFlow"""
+    # 查找可用端口
+    port = await self._find_available_port(self.user_id)
+    
+    # 启动 ACP 进程
+    await self._start_acp_process(port)
+    
+    # 端口入栈
+    if self.user_id not in self._user_ports:
+        self._user_ports[self.user_id] = []
+    self._user_ports[self.user_id].insert(0, port)  # 栈顶
+    
+    self._port = port
+    self._url = f"ws://localhost:{port}/acp"
+    
+    # SDK 连接（不自动启动）
+    self._options = IFlowOptions(
+        url=self._url,
+        auto_start_process=False,  # 关键！
+        cwd=self.cwd,
+        timeout=self.timeout,
+        session_id=self.session_id,
+    )
+    
+    # ... 连接逻辑
+```
+
+### 5. 断开逻辑
+
+```python
+async def _on_task_finish(self, user_id: int, port: int):
+    """TaskFinishMessage 时的断开逻辑"""
+    ports = self._user_ports.get(user_id, [])
+    
+    # 只有当栈里有多个端口，且当前端口不是栈顶时才断开
+    if len(ports) > 1 and port != ports[0]:
+        # 当前端口是旧的 ACP，断开它
+        await self._stop_acp_process(port)
+        ports.remove(port)
+        self._used_ports.discard(port)
+
+async def _stop_acp_process(self, port: int):
+    """停止 ACP 进程"""
+    process = self._port_processes.pop(port, None)
+    if process and process.returncode is None:
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+```
 
 ---
 
-## 优势总结
+## 场景测试
 
-1. **解耦彻底**：输入输出组件可独立替换
-2. **资源可控**：Redis 内存受限 + 自动过期
-3. **扩展性好**：未来可添加 HTTP 输入、MQTT 输出等
-4. **断线恢复**：重连后从 Redis 拉取未消费消息
+### 场景 1：用户首次连接
+```
+1. 分配端口 8091
+2. 启动 ACP 进程
+3. 端口栈：[8091]
+4. TaskFinishMessage → 不变
+```
+
+### 场景 2：用户开第二个连接
+```
+1. 分配端口 8092
+2. 启动新的 ACP 进程
+3. 端口栈：[8092, 8091]
+4. 旧连接 8091 输出完 TaskFinishMessage → 断开 8091
+5. 端口栈：[8092]
+```
+
+### 场景 3：端口冲突
+```
+1. 端口 8091 被占用
+2. 重试 → 尝试 8092
+3. 成功 → 使用 8092
+4. 重试 10 次仍失败 → 返回错误"系统繁忙"
+```
+
+---
+
+## 优势
+
+1. **流式输出**：手动启动带 `--stream` 的 ACP 进程
+2. **资源管理**：端口可配置大范围，避免冲突
+3. **平滑过渡**：旧连接输出完才断开，不影响用户体验
+4. **错误处理**：端口分配失败有明确提示
+
+## 注意事项
+
+1. 端口范围要足够大，避免高并发时端口耗尽
+2. 需要确保 iflow CLI 已安装并可在 PATH 中找到
+3. 进程清理要彻底，避免僵尸进程

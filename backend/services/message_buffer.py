@@ -94,8 +94,8 @@ class MessageBuffer:
         # 添加到 Stream
         entry_id = await self.redis.xadd(key, {"data": data})
 
-        # 设置过期时间
-        await self.redis.expire(key, self.ttl)
+        # 不设置过期时间，消息永久保留
+        # await self.redis.expire(key, self.ttl)
 
         logger.debug(f"Pushed message to {key}, entry_id={entry_id}")
         return entry_id
@@ -128,11 +128,11 @@ class MessageBuffer:
         if not messages:
             return None
 
-        # 删除已读消息
-        for stream_name, entries in messages:
-            entry_ids = [entry[0] for entry in entries]
-            if entry_ids:
-                await self.redis.xdel(key, *entry_ids)
+        # 删除已读消息（临时禁用，测试流式）
+        # for stream_name, entries in messages:
+        #     entry_ids = [entry[0] for entry in entries]
+        #     if entry_ids:
+        #         await self.redis.xdel(key, *entry_ids)
 
         logger.debug(f"Consumed {len(messages[0][1])} messages from {key}")
         return messages
