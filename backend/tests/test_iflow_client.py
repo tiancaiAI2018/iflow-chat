@@ -1084,3 +1084,227 @@ class TestConnectFlow:
         assert captured_options is not None
         assert captured_options.auto_start_process is False
         assert captured_options.cwd == client.cwd
+
+
+# ============= feat-045: 断开逻辑测试 =============
+
+class TestDisconnectLogic:
+    """TaskFinishMessage 断开逻辑测试"""
+    
+    def setup_method(self):
+        """每个测试方法前清理状态"""
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
+    def teardown_method(self):
+        """每个测试方法后清理状态"""
+        IFlowClientService._port_processes = {}
+        IFlowClientService._user_ports = {}
+        IFlowClientService._used_ports = set()
+    
+    @pytest.mark.asyncio
+    async def test_on_task_finish_single_port_no_disconnect(self):
+        """测试栈长度=1时不断开 - 当前正在使用的连接"""
+        user_id = 2001
+        port = 8091
+        
+        # 设置用户只有一个端口
+        IFlowClientService._push_user_port(user_id, port)
+        IFlowClientService._used_ports.add(port)
+        
+        client = IFlowClientService(user_id=user_id)
+        client._port = port
+        
+        # Mock _stop_acp_process
+        with patch.object(IFlowClientService, '_stop_acp_process', new_callable=AsyncMock) as mock_stop:
+            await client._on_task_finish()
+            
+            # 验证：栈长度为1，不应该调用 _stop_acp_process
+            mock_stop.assert_not_called()
+    
+    @pytest.mark.asyncio
+    async def test_on_task_finish_stack_top_no_disconnect(self):
+        """测试栈长度>1且当前端口是栈顶时不断开"""
+        user_id = 2002
+        port1 = 8091
+        port2 = 8092
+        
+        # 设置用户有两个端口，port2 在栈顶
+        IFlowClientService._push_user_port(user_id, port1)  # 先入栈 port1
+        IFlowClientService._push_user_port(user_id, port2)  # 再入栈 port2（栈顶）
+        IFlowClientService._used_ports.add(port1)
+        IFlowClientService._used_ports.add(port2)
+        
+        # 当前客户端使用栈顶的 port2
+        client = IFlowClientService(user_id=user_id)
+        client._port = port2
+        
+        # Mock _stop_acp_process
+        with patch.object(IFlowClientService, '_stop_acp_process', new_callable=AsyncMock) as mock_stop:
+            await client._on_task_finish()
+            
+            # 验证：当前端口是栈顶，不应该调用 _stop_acp_process
+            mock_stop.assert_not_called()
+    
+    @pytest.mark.asyncio
+    async def test_on_task_finish_not_stack_top_disconnect(self):
+        """测试栈长度>1且当前端口不是栈顶时断开旧进程"""
+        user_id = 2003
+        port1 = 8091
+        port2 = 8092
+        
+        # 设置用户有两个端口，port2 在栈顶
+        IFlowClientService._push_user_port(user_id, port1)  # 先入栈 port1
+        IFlowClientService._push_user_port(user_id, port2)  # 再入栈 port2（栈顶）
+        IFlowClientService._used_ports.add(port1)
+        IFlowClientService._used_ports.add(port2)
+        
+        # 当前客户端使用的是旧的 port1（不是栈顶）
+        client = IFlowClientService(user_id=user_id)
+        client._port = port1
+        
+        # Mock _stop_acp_process 和 _remove_user_port
+        with patch.object(IFlowClientService, '_stop_acp_process', new_callable=AsyncMock) as mock_stop:
+            with patch.object(IFlowClientService, '_remove_user_port') as mock_remove:
+                await client._on_task_finish()
+                
+                # 验证：当前端口不是栈顶，应该调用 _stop_acp_process 和 _remove_user_port
+                mock_stop.assert_called_once_with(port1)
+                mock_remove.assert_called_once_with(user_id, port1)
+    
+    @pytest.mark.asyncio
+    async def test_on_task_finish_multiple_ports_disconnect_old(self):
+        """测试多端口场景下断开旧进程 - 3个端口时中间端口触发断开"""
+        user_id = 2004
+        port1 = 8091
+        port2 = 8092
+        port3 = 8093
+        
+        # 设置用户有三个端口，port3 在栈顶
+        IFlowClientService._push_user_port(user_id, port1)
+        IFlowClientService._push_user_port(user_id, port2)
+        IFlowClientService._push_user_port(user_id, port3)  # 栈顶
+        IFlowClientService._used_ports.add(port1)
+        IFlowClientService._used_ports.add(port2)
+        IFlowClientService._used_ports.add(port3)
+        
+        # 场景1：当前客户端使用 port1（最旧，不是栈顶）
+        client1 = IFlowClientService(user_id=user_id)
+        client1._port = port1
+        
+        with patch.object(IFlowClientService, '_stop_acp_process', new_callable=AsyncMock) as mock_stop:
+            with patch.object(IFlowClientService, '_remove_user_port') as mock_remove:
+                await client1._on_task_finish()
+                
+                # 验证：port1 应该被断开
+                mock_stop.assert_called_once_with(port1)
+                mock_remove.assert_called_once_with(user_id, port1)
+        
+        # 清理模拟调用
+        mock_stop.reset_mock()
+        mock_remove.reset_mock()
+        
+        # 场景2：当前客户端使用 port2（中间，不是栈顶）
+        client2 = IFlowClientService(user_id=user_id)
+        client2._port = port2
+        
+        with patch.object(IFlowClientService, '_stop_acp_process', new_callable=AsyncMock) as mock_stop:
+            with patch.object(IFlowClientService, '_remove_user_port') as mock_remove:
+                await client2._on_task_finish()
+                
+                # 验证：port2 应该被断开
+                mock_stop.assert_called_once_with(port2)
+                mock_remove.assert_called_once_with(user_id, port2)
+        
+        # 清理模拟调用
+        mock_stop.reset_mock()
+        mock_remove.reset_mock()
+        
+        # 场景3：当前客户端使用 port3（栈顶）
+        client3 = IFlowClientService(user_id=user_id)
+        client3._port = port3
+        
+        with patch.object(IFlowClientService, '_stop_acp_process', new_callable=AsyncMock) as mock_stop:
+            with patch.object(IFlowClientService, '_remove_user_port') as mock_remove:
+                await client3._on_task_finish()
+                
+                # 验证：port3 是栈顶，不应该被断开
+                mock_stop.assert_not_called()
+                mock_remove.assert_not_called()
+    
+    @pytest.mark.asyncio
+    async def test_query_stream_calls_on_task_finish(self):
+        """测试 query_stream 在 TaskFinishMessage 时调用 _on_task_finish"""
+        user_id = 2005
+        port = 8094
+        
+        # 设置用户有一个端口
+        IFlowClientService._push_user_port(user_id, port)
+        IFlowClientService._used_ports.add(port)
+        
+        client = IFlowClientService(user_id=user_id)
+        client._port = port
+        
+        # Mock SDK client
+        mock_sdk_client = AsyncMock()
+        mock_sdk_client.send_message = AsyncMock()
+        
+        from iflow_sdk import TaskFinishMessage, StopReason
+        
+        finish_msg = MagicMock(spec=TaskFinishMessage)
+        finish_msg.stop_reason = StopReason.END_TURN
+        
+        mock_sdk_client.receive_messages = MagicMock(
+            return_value=self._async_generator([finish_msg])
+        )
+        
+        client._client = mock_sdk_client
+        client._is_connected = True
+        
+        # Mock _on_task_finish
+        with patch.object(client, '_on_task_finish', new_callable=AsyncMock) as mock_on_finish:
+            async for msg in client.query_stream("test"):
+                pass
+            
+            # 验证：TaskFinishMessage 到达时调用了 _on_task_finish
+            mock_on_finish.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_on_task_finish_no_port(self):
+        """测试 _port 为 None 时的处理"""
+        user_id = 2006
+        
+        client = IFlowClientService(user_id=user_id)
+        client._port = None  # 没有端口
+        
+        # Mock _stop_acp_process
+        with patch.object(IFlowClientService, '_stop_acp_process', new_callable=AsyncMock) as mock_stop:
+            await client._on_task_finish()
+            
+            # 验证：_port 为 None 时，不应该调用 _stop_acp_process
+            mock_stop.assert_not_called()
+    
+    @pytest.mark.asyncio
+    async def test_on_task_finish_no_user_ports(self):
+        """测试用户端口栈为空时的处理"""
+        user_id = 2007
+        port = 8095
+        
+        client = IFlowClientService(user_id=user_id)
+        client._port = port
+        # 用户端口栈为空（没有调用 _push_user_port）
+        
+        # Mock _stop_acp_process
+        with patch.object(IFlowClientService, '_stop_acp_process', new_callable=AsyncMock) as mock_stop:
+            await client._on_task_finish()
+            
+            # 验证：端口栈为空时，不应该调用 _stop_acp_process
+            mock_stop.assert_not_called()
+    
+    def _async_generator(self, items):
+        """辅助方法：创建异步生成器"""
+        async def gen():
+            for item in items:
+                yield item
+        return gen()

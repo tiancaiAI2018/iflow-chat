@@ -677,6 +677,52 @@ class IFlowClientService:
         """检查服务是否可用"""
         return self._is_service_available
     
+    async def _on_task_finish(self) -> None:
+        """
+        任务完成时的回调方法
+        智能判断是否断开旧 ACP 进程：
+        - 栈长度=1：不断开（当前正在使用的连接）
+        - 栈长度>1且当前端口是栈顶：不断开
+        - 栈长度>1且当前端口不是栈顶：断开该进程并从栈中移除
+        
+        这样可以确保平滑过渡，旧连接的任务完成后自动清理资源。
+        """
+        if self._port is None:
+            logger.debug(f"User {self.user_id}: _on_task_finish called but _port is None")
+            return
+        
+        user_ports = self._get_user_ports(self.user_id)
+        
+        # 如果用户端口栈为空，不做任何操作
+        if not user_ports:
+            logger.debug(f"User {self.user_id}: No ports in stack, skipping disconnect")
+            return
+        
+        # 如果栈长度为1，不断开（当前正在使用的连接）
+        if len(user_ports) == 1:
+            logger.debug(f"User {self.user_id}: Only one port in stack ({self._port}), keeping connection")
+            return
+        
+        # 获取栈顶端口
+        stack_top_port = user_ports[0]
+        
+        # 如果当前端口是栈顶，不断开
+        if self._port == stack_top_port:
+            logger.debug(f"User {self.user_id}: Current port {self._port} is stack top, keeping connection")
+            return
+        
+        # 当前端口不是栈顶，需要断开旧进程
+        logger.info(f"User {self.user_id}: Current port {self._port} is not stack top ({stack_top_port}), disconnecting old process")
+        
+        try:
+            # 停止 ACP 进程
+            await self._stop_acp_process(self._port)
+            # 从用户端口栈中移除
+            self._remove_user_port(self.user_id, self._port)
+            logger.info(f"User {self.user_id}: Successfully disconnected old process on port {self._port}")
+        except Exception as e:
+            logger.error(f"User {self.user_id}: Error disconnecting old process on port {self._port}: {e}")
+    
     async def query_stream(
         self,
         message: str,
@@ -768,6 +814,10 @@ class IFlowClientService:
                         is_finished=True,
                         stop_reason=msg.stop_reason.value if msg.stop_reason else None,
                     )
+                    
+                    # 任务完成时，智能判断是否断开旧 ACP 进程
+                    await self._on_task_finish()
+                    
                     break  # 结束消息循环
             
             # 发送完成标记
