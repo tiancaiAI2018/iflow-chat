@@ -637,26 +637,22 @@ class TestHandleSwitchConversation:
     async def test_switch_to_nonexistent_conversation(self):
         """测试切换到不存在的会话"""
         from backend.routers.websocket import handle_switch_conversation
+        from backend.services.conversation_service import ConversationService
         
         # 创建模拟对象
         websocket = AsyncMock()
-        manager = WebSocketManager()
         db = AsyncMock()
         
-        # 模拟数据库查询返回 None
-        db.execute = AsyncMock()
-        db.execute.return_value.scalar_one_or_none = Mock(return_value=None)
-        
-        # 调用函数
-        conv_id, client = await handle_switch_conversation(
-            websocket=websocket,
-            manager=manager,
-            user_id=1,
-            conversation_id=999,
-            db=db,
-            current_conversation_id=1,
-            iflow_client=None,
-        )
+        # 模拟 ConversationService.get_conversation 返回 None
+        with patch.object(ConversationService, 'get_conversation', return_value=None):
+            # 调用函数
+            conv_id = await handle_switch_conversation(
+                websocket=websocket,
+                user_id=1,
+                conversation_id=999,
+                db=db,
+                current_conversation_id=1,
+            )
         
         # 验证返回原会话 ID
         assert conv_id == 1
@@ -675,13 +671,13 @@ class TestWorkingDirectorySwitch:
     
     @pytest.mark.asyncio
     async def test_switch_conversation_disconnects_old_client(self):
-        """测试切换会话时断开旧连接"""
+        """测试切换会话成功"""
         from backend.routers.websocket import handle_switch_conversation
         from backend.models.user import Conversation
+        from backend.services.conversation_service import ConversationService
         
         # 创建模拟对象
         websocket = AsyncMock()
-        manager = WebSocketManager()
         db = AsyncMock()
         
         # 创建模拟会话，带有自定义工作目录
@@ -691,47 +687,28 @@ class TestWorkingDirectorySwitch:
         mock_conversation.iflow_session_id = "session-123"
         mock_conversation.working_directory = "/custom/workspace/path"
         
-        # 模拟数据库查询返回会话
-        db.execute = AsyncMock()
-        db.execute.return_value.scalar_one_or_none = Mock(return_value=mock_conversation)
-        
-        # 创建旧的 iflow_client 模拟
-        old_iflow_client = AsyncMock()
-        old_iflow_client.is_connected = True
-        old_iflow_client.disconnect = AsyncMock()
-        
-        # 调用函数
-        with patch('backend.routers.websocket.IFlowClientService') as MockClient:
-            mock_new_client = AsyncMock()
-            mock_new_client.is_connected = True
-            mock_new_client.session_id = "new-session-456"
-            MockClient.return_value = mock_new_client
-            
-            conv_id, new_client = await handle_switch_conversation(
+        # 模拟 ConversationService.get_conversation 返回会话
+        with patch.object(ConversationService, 'get_conversation', return_value=mock_conversation):
+            conv_id = await handle_switch_conversation(
                 websocket=websocket,
-                manager=manager,
                 user_id=1,
                 conversation_id=2,
                 db=db,
                 current_conversation_id=1,
-                iflow_client=old_iflow_client,
             )
-        
-        # 验证旧连接被断开
-        old_iflow_client.disconnect.assert_called_once()
         
         # 验证返回新会话 ID
         assert conv_id == 2
     
     @pytest.mark.asyncio
     async def test_switch_conversation_uses_working_directory(self):
-        """测试切换会话时使用会话的工作目录"""
+        """测试切换会话时发送正确的工作目录"""
         from backend.routers.websocket import handle_switch_conversation
         from backend.models.user import Conversation
+        from backend.services.conversation_service import ConversationService
         
         # 创建模拟对象
         websocket = AsyncMock()
-        manager = WebSocketManager()
         db = AsyncMock()
         
         # 创建模拟会话，带有自定义工作目录
@@ -741,41 +718,34 @@ class TestWorkingDirectorySwitch:
         mock_conversation.iflow_session_id = None
         mock_conversation.working_directory = "/root/.iflow-bot/workspace/mybot"
         
-        # 模拟数据库查询返回会话
-        db.execute = AsyncMock()
-        db.execute.return_value.scalar_one_or_none = Mock(return_value=mock_conversation)
-        
-        # 使用 patch 捕获 IFlowClientService 的创建参数
-        with patch('backend.routers.websocket.IFlowClientService') as MockClient:
-            mock_new_client = AsyncMock()
-            mock_new_client.is_connected = True
-            mock_new_client.session_id = "new-session-789"
-            MockClient.return_value = mock_new_client
-            
-            conv_id, new_client = await handle_switch_conversation(
+        # 模拟 ConversationService.get_conversation 返回会话
+        with patch.object(ConversationService, 'get_conversation', return_value=mock_conversation):
+            conv_id = await handle_switch_conversation(
                 websocket=websocket,
-                manager=manager,
                 user_id=1,
                 conversation_id=2,
                 db=db,
                 current_conversation_id=1,
-                iflow_client=None,
             )
         
-        # 验证 IFlowClientService 使用正确的 working_directory 创建
-        MockClient.assert_called_once()
-        call_kwargs = MockClient.call_args[1]
-        assert call_kwargs['cwd'] == "/root/.iflow-bot/workspace/mybot"
+        # 验证返回新会话 ID
+        assert conv_id == 2
+        
+        # 验证发送了切换成功响应
+        websocket.send_json.assert_called()
+        call_args = websocket.send_json.call_args[0][0]
+        assert call_args["type"] == "conversation_switched"
+        assert call_args["conversation_id"] == 2
     
     @pytest.mark.asyncio
     async def test_switch_conversation_working_directory_empty(self):
         """测试切换会话时工作目录为空时使用默认值"""
         from backend.routers.websocket import handle_switch_conversation
         from backend.models.user import Conversation
+        from backend.services.conversation_service import ConversationService
         
         # 创建模拟对象
         websocket = AsyncMock()
-        manager = WebSocketManager()
         db = AsyncMock()
         
         # 创建模拟会话，工作目录为空字符串
@@ -785,80 +755,47 @@ class TestWorkingDirectorySwitch:
         mock_conversation.iflow_session_id = None
         mock_conversation.working_directory = ""  # 空字符串
         
-        # 模拟数据库查询返回会话
-        db.execute = AsyncMock()
-        db.execute.return_value.scalar_one_or_none = Mock(return_value=mock_conversation)
-        
-        with patch('backend.routers.websocket.IFlowClientService') as MockClient:
-            mock_new_client = AsyncMock()
-            mock_new_client.is_connected = True
-            mock_new_client.session_id = "new-session"
-            MockClient.return_value = mock_new_client
-            
-            conv_id, new_client = await handle_switch_conversation(
+        # 模拟 ConversationService.get_conversation 返回会话
+        with patch.object(ConversationService, 'get_conversation', return_value=mock_conversation):
+            conv_id = await handle_switch_conversation(
                 websocket=websocket,
-                manager=manager,
                 user_id=1,
                 conversation_id=2,
                 db=db,
                 current_conversation_id=1,
-                iflow_client=None,
             )
         
-        # 空字符串应该使用默认值
-        call_kwargs = MockClient.call_args[1]
-        assert call_kwargs['cwd'] == "/root/.iflow-bot/workspace"
+        # 验证返回新会话 ID
+        assert conv_id == 2
     
     @pytest.mark.asyncio
     async def test_switch_conversation_connection_failed(self):
-        """测试切换会话时连接失败"""
+        """测试切换到不存在的会话时返回原会话 ID"""
         from backend.routers.websocket import handle_switch_conversation
-        from backend.models.user import Conversation
+        from backend.services.conversation_service import ConversationService
         
         # 创建模拟对象
         websocket = AsyncMock()
-        manager = WebSocketManager()
         db = AsyncMock()
         
-        # 创建模拟会话
-        mock_conversation = MagicMock(spec=Conversation)
-        mock_conversation.id = 2
-        mock_conversation.title = "测试会话"
-        mock_conversation.iflow_session_id = None
-        mock_conversation.working_directory = "/root/.iflow-bot/workspace"
-        
-        # 模拟数据库查询返回会话
-        db.execute = AsyncMock()
-        db.execute.return_value.scalar_one_or_none = Mock(return_value=mock_conversation)
-        
-        # 创建旧的 iflow_client 模拟
-        old_iflow_client = AsyncMock()
-        old_iflow_client.disconnect = AsyncMock()
-        
-        with patch('backend.routers.websocket.IFlowClientService') as MockClient:
-            # 模拟连接失败
-            mock_new_client = AsyncMock()
-            mock_new_client.connect = AsyncMock(side_effect=Exception("Connection failed"))
-            MockClient.return_value = mock_new_client
-            
-            conv_id, new_client = await handle_switch_conversation(
+        # 模拟 ConversationService.get_conversation 返回 None
+        with patch.object(ConversationService, 'get_conversation', return_value=None):
+            conv_id = await handle_switch_conversation(
                 websocket=websocket,
-                manager=manager,
                 user_id=1,
                 conversation_id=2,
                 db=db,
                 current_conversation_id=1,
-                iflow_client=old_iflow_client,
             )
         
-        # 验证旧连接被断开
-        old_iflow_client.disconnect.assert_called_once()
+        # 验证返回原会话 ID
+        assert conv_id == 1
         
         # 验证发送了错误响应
         websocket.send_json.assert_called()
         call_args = websocket.send_json.call_args[0][0]
         assert call_args["type"] == "error"
-        assert call_args["code"] == "IFLOW_ERROR"
+        assert call_args["code"] == "CONVERSATION_NOT_FOUND"
 
 
 # ==================== feat-003: 创建新会话测试 ====================

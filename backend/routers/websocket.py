@@ -7,6 +7,7 @@ WebSocket 路由
 import asyncio
 import logging
 import json
+import uuid
 from typing import Optional, Any, Tuple, Set
 from datetime import datetime
 
@@ -162,6 +163,10 @@ async def subscribe_redis_messages(
     stop_event: asyncio.Event,
     processed_ids: Set[str],
     conversation_id: Optional[int] = None,
+    db: Optional[AsyncSession] = None,
+    user_content: Optional[str] = None,
+    complete_event: Optional[asyncio.Event] = None,
+    request_id: Optional[str] = None,
 ):
     """
     订阅 Redis Stream 消息并推送给 WebSocket
@@ -173,46 +178,95 @@ async def subscribe_redis_messages(
         stop_event: 停止信号
         processed_ids: 已处理的消息 ID 集合
         conversation_id: 当前会话 ID（可选，用于过滤消息）
+        db: 数据库会话（可选，用于任务意图识别）
+        user_content: 用户消息内容（可选，用于任务意图识别）
+        complete_event: 完成事件（可选，用于通知响应完成）
+        request_id: 请求 ID（可选，用于过滤特定请求的消息）
     """
-    logger.debug(f"Starting Redis subscription for user {user_id}")
+    logger.debug(f"Starting Redis subscription for user {user_id}, request_id={request_id}")
+    
+    # 收集完整的响应内容（用于任务意图识别）
+    full_response_parts = []
 
     while not stop_event.is_set():
         try:
             # 从 Redis Stream 获取待推送消息
-            pending = await message_buffer.get_pending(user_id, count=10)
+            # 增大 count 以减少循环次数
+            pending = await message_buffer.get_pending(user_id, count=100)
 
             if pending:
+                entry_ids_to_delete = []
+                
                 for stream_name, entries in pending:
                     for entry_id, fields in entries:
                         # 跳过已处理的消息
                         if entry_id in processed_ids:
                             continue
 
-                        # 标记为已处理
-                        processed_ids.add(entry_id)
-
                         # 解析消息
                         try:
                             data = json.loads(fields.get('data', '{}'))
                         except json.JSONDecodeError:
+                            # 解析失败的消息直接删除
+                            processed_ids.add(entry_id)
+                            entry_ids_to_delete.append(entry_id)
+                            continue
+
+                        # 过滤 request_id（优先级最高）
+                        # 如果指定了 request_id，只处理匹配的消息
+                        msg_request_id = data.get('request_id')
+                        if request_id is not None and msg_request_id is not None:
+                            if msg_request_id != request_id:
+                                # 不匹配的消息跳过，不删除（留给其他请求消费）
+                                # 但如果没有 request_id，说明是旧消息，可以删除
+                                logger.debug(f"Skipping message for different request: {msg_request_id} != {request_id}")
+                                continue
+                        elif request_id is not None and msg_request_id is None:
+                            # 消息没有 request_id，说明是旧格式消息，删除
+                            processed_ids.add(entry_id)
+                            entry_ids_to_delete.append(entry_id)
+                            logger.debug(f"Deleting old message without request_id")
                             continue
 
                         # 过滤会话 ID（如果指定）
+                        # 只有当消息和当前会话都有 conversation_id 时才过滤
                         msg_conversation_id = data.get('conversation_id')
                         if conversation_id is not None and msg_conversation_id is not None:
                             if msg_conversation_id != conversation_id:
+                                # 不匹配的消息不处理，也不删除（留给对应的会话消费）
+                                logger.debug(f"Skipping message for different conversation: {msg_conversation_id} != {conversation_id}")
                                 continue
+
+                        # 标记为已处理
+                        processed_ids.add(entry_id)
+                        entry_ids_to_delete.append(entry_id)
 
                         # 推送给 WebSocket
                         msg_type = data.get('type')
 
                         if msg_type == 'stream':
                             # 流式响应
+                            content = data.get('content', '')
+                            if content:
+                                full_response_parts.append(content)
                             await websocket.send_json(
                                 AssistantMessageResponse(
-                                    content=data.get('content', ''),
+                                    content=content,
                                     is_delta=data.get('is_delta', True),
                                     is_finished=False,
+                                ).model_dump()
+                            )
+
+                        elif msg_type == 'tool_call':
+                            # 工具调用
+                            await websocket.send_json(
+                                ToolCallResponse(
+                                    tool_id=data.get('tool_id'),
+                                    tool_name=data.get('tool_name', 'unknown'),
+                                    arguments=data.get('arguments', {}),
+                                    status=data.get('status', 'in_progress'),
+                                    result=data.get('result'),
+                                    error=data.get('error'),
                                 ).model_dump()
                             )
 
@@ -225,11 +279,31 @@ async def subscribe_redis_messages(
                                     is_finished=True,
                                 ).model_dump()
                             )
-                            # 消费已处理的消息
-                            await message_buffer.consume(user_id, count=len(processed_ids))
+                            
+                            # 检查定时任务意图
+                            response_text = data.get('content', '') or ''.join(full_response_parts)
+                            if response_text and db and user_content:
+                                task_intent = extract_task_intent(response_text)
+                                if task_intent:
+                                    task_description = task_intent.get("description", user_content)
+                                    await try_create_task_from_intent(
+                                        websocket=websocket,
+                                        user_id=user_id,
+                                        description=task_description,
+                                    )
+                            
+                            # 通知响应完成
+                            if complete_event:
+                                complete_event.set()
+
+                # 立即消费（删除）已处理的消息
+                if entry_ids_to_delete:
+                    key = f"user:{user_id}:messages"
+                    await message_buffer.redis.xdel(key, *entry_ids_to_delete)
+                    logger.debug(f"Deleted {len(entry_ids_to_delete)} messages from {key}")
 
             # 短暂等待
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
         except Exception as e:
             logger.error(f"Error in Redis subscription: {e}")
@@ -292,9 +366,8 @@ async def websocket_endpoint(
     db_gen = get_db()
     db = await anext(db_gen)
 
-    # 从 WebSocketManager 获取或创建用户的 iFlow session
-    user_session = manager.get_or_create_user_session(user_id)
-    iflow_client = user_session.iflow_client
+    # 注意：iflow_client 由 IFlowProcessor 统一管理，不再在 WebSocket 层管理
+    # 这样避免双 ACP 进程问题
 
     # 当前会话 ID（用于消息关联）
     current_conversation_id: Optional[int] = None
@@ -310,6 +383,30 @@ async def websocket_endpoint(
     redis_stop_event = asyncio.Event()
     redis_task: Optional[asyncio.Task] = None
     processed_ids: Set[str] = set()
+    
+    # 新连接建立时，清理没有 conversation_id 的旧消息（保留有会话 ID 的消息供后续消费）
+    # 这样可以避免刷新后消费旧消息，同时保留 WebSocket 断开期间缓存的消息
+    try:
+        pending = await message_buffer.get_pending(user_id, count=1000)
+        if pending:
+            entry_ids_to_delete = []
+            for stream_name, entries in pending:
+                for entry_id, fields in entries:
+                    try:
+                        data = json.loads(fields.get('data', '{}'))
+                        # 只删除没有 conversation_id 的旧消息（旧格式消息）
+                        # 有 conversation_id 的消息保留，等待 switch_conversation 时消费
+                        if data.get('conversation_id') is None:
+                            entry_ids_to_delete.append(entry_id)
+                    except json.JSONDecodeError:
+                        # 解析失败的消息直接删除
+                        entry_ids_to_delete.append(entry_id)
+            if entry_ids_to_delete:
+                key = f"user:{user_id}:messages"
+                await message_buffer.redis.xdel(key, *entry_ids_to_delete)
+                logger.info(f"Cleared {len(entry_ids_to_delete)} old messages without conversation_id on new connection for user {user_id}")
+    except Exception as e:
+        logger.warning(f"Error clearing old messages on connection: {e}")
 
     try:
         # 消息循环
@@ -381,15 +478,15 @@ async def websocket_endpoint(
                     )
                     continue
 
-                # 处理会话切换
-                current_conversation_id, iflow_client = await handle_switch_conversation(
+                # 处理会话切换（并消费该会话的缓存消息）
+                current_conversation_id = await handle_switch_conversation(
                     websocket=websocket,
-                    manager=manager,
                     user_id=user_id,
                     conversation_id=conversation_id,
                     db=db,
                     current_conversation_id=current_conversation_id,
-                    iflow_client=iflow_client,
+                    message_buffer=message_buffer,
+                    processed_ids=processed_ids,
                 )
 
             elif msg_type == "chat":
@@ -411,14 +508,11 @@ async def websocket_endpoint(
                 message_conversation_id = data.get("conversation_id")
 
                 # 处理聊天消息（使用 EventBus）
-                current_conversation_id, iflow_client = await handle_chat_message_eventbus(
+                result = await handle_chat_message_eventbus(
                     websocket=websocket,
-                    manager=manager,
-                    connection_id=connection_id,
                     user_id=user_id,
                     content=content,
                     db=db,
-                    iflow_client=iflow_client,
                     input_handler=input_handler,
                     message_buffer=message_buffer,
                     current_conversation_id=message_conversation_id or current_conversation_id,
@@ -426,6 +520,11 @@ async def websocket_endpoint(
                     redis_task=redis_task,
                     processed_ids=processed_ids,
                 )
+                # 解包返回值：(conversation_id, redis_task)
+                if isinstance(result, tuple):
+                    current_conversation_id, redis_task = result
+                else:
+                    current_conversation_id = result
 
             else:
                 await websocket.send_json(
@@ -460,15 +559,10 @@ async def websocket_endpoint(
                 redis_task.cancel()
 
         # 清理资源
-        user_id_result = await manager.disconnect(connection_id)
-
-        # 关闭 iflow_client 连接（WebSocket 断开时）
-        if iflow_client is not None:
-            try:
-                await iflow_client.disconnect()
-                logger.info(f"Closed iFlow client when WebSocket disconnected")
-            except Exception as e:
-                logger.warning(f"Error closing iFlow client: {e}")
+        await manager.disconnect(connection_id)
+        
+        # 注意：iflow_client 由 IFlowProcessor 管理，在用户会话过期时自动清理
+        # 这里不再手动关闭 iflow_client
 
         # 关闭消息缓冲
         try:
@@ -539,12 +633,9 @@ async def authenticate_connection(
 
 async def handle_chat_message_eventbus(
     websocket: WebSocket,
-    manager: WebSocketManager,
-    connection_id: str,
     user_id: int,
     content: str,
     db: AsyncSession,
-    iflow_client: Optional[IFlowClientService],
     input_handler: WebSocketInputHandler,
     message_buffer: MessageBuffer,
     current_conversation_id: Optional[int] = None,
@@ -552,21 +643,20 @@ async def handle_chat_message_eventbus(
     redis_stop_event: Optional[asyncio.Event] = None,
     redis_task: Optional[asyncio.Task] = None,
     processed_ids: Optional[Set[str]] = None,
-) -> Tuple[Optional[int], Optional[IFlowClientService]]:
+) -> Tuple[Optional[int], Optional[asyncio.Task]]:
     """
     处理聊天消息（使用 EventBus）
 
     通过 EventBus 发射 user_message 信号，由 IFlowProcessor 处理 AI 对话，
     通过 Redis 订阅接收响应并推送给 WebSocket。
 
+    注意：iflow_client 由 IFlowProcessor 统一管理，不在本函数中创建或管理。
+
     Args:
         websocket: WebSocket 连接
-        manager: WebSocket 管理器
-        connection_id: 连接 ID
         user_id: 用户 ID
         content: 消息内容
         db: 数据库会话
-        iflow_client: iFlow 客户端（可选，保持兼容性）
         input_handler: WebSocket 输入处理器
         message_buffer: 消息缓冲服务
         current_conversation_id: 当前会话 ID（可选）
@@ -576,7 +666,7 @@ async def handle_chat_message_eventbus(
         processed_ids: 已处理的消息 ID 集合
 
     Returns:
-        Tuple[Optional[int], Optional[IFlowClientService]]: (更新后的会话 ID, 更新后的 iFlow 客户端)
+        Optional[int]: 更新后的会话 ID
     """
     logger.debug(f"Handling chat message (EventBus): user_id={user_id}, content={content[:50]}...")
 
@@ -594,15 +684,6 @@ async def handle_chat_message_eventbus(
     if not current_conversation_id:
         # 创建新会话，使用指定的或默认的工作目录
         effective_working_directory = working_directory or "/root/.iflow-bot/workspace"
-
-        # 断开旧的 iflow_client 连接
-        if iflow_client is not None:
-            try:
-                await iflow_client.disconnect()
-                logger.info(f"Disconnected old iFlow client when creating new conversation")
-            except Exception as e:
-                logger.warning(f"Error disconnecting old iFlow client: {e}")
-            iflow_client = None
 
         conversation = await conversation_service.create_conversation(
             user_id=user_id,
@@ -633,127 +714,70 @@ async def handle_chat_message_eventbus(
     # 获取工作目录
     cwd = conversation.working_directory if conversation else working_directory or "/root/.iflow-bot/workspace"
 
+    # 生成本次请求的唯一 ID，用于过滤消息
+    request_id = str(uuid.uuid4())[:8]
+    logger.debug(f"Generated request_id: {request_id} for user {user_id}")
+
     # 使用 WebSocketInputHandler 发射 user_message 信号
     input_handler.handle(
         user_id=user_id,
         content=content,
         conversation_id=current_conversation_id,
         working_directory=cwd,
+        request_id=request_id,  # 传递 request_id
     )
 
-    # 启动 Redis 订阅任务（如果尚未启动）
-    if redis_task is None and redis_stop_event is not None and processed_ids is not None:
+    # 启动 Redis 订阅任务
+    # subscribe_redis_messages 负责：读取消息、推送给 WebSocket、消费消息
+    # 使用 complete_event 来通知响应完成
+    complete_event = asyncio.Event()
+    
+    # 创建本次请求专用的停止事件
+    request_stop_event = asyncio.Event()
+    
+    if processed_ids is not None:
+        # 每次请求创建新的订阅任务
         redis_task = asyncio.create_task(
             subscribe_redis_messages(
                 websocket=websocket,
                 user_id=user_id,
                 message_buffer=message_buffer,
-                stop_event=redis_stop_event,
+                stop_event=request_stop_event,  # 使用请求专用的停止事件
                 processed_ids=processed_ids,
                 conversation_id=current_conversation_id,
+                db=db,
+                user_content=content,
+                complete_event=complete_event,
+                request_id=request_id,  # 传递 request_id 用于过滤
             )
         )
 
-    # 等待响应完成（通过监听 Redis Stream）
-    # 这里使用一个简单的轮询机制，等待收到 complete 消息
-    complete_received = False
-    timeout = 60.0  # 60秒超时
-    start_time = asyncio.get_event_loop().time()
-
-    while not complete_received:
-        # 检查超时
-        if asyncio.get_event_loop().time() - start_time > timeout:
-            logger.warning(f"Timeout waiting for AI response: user_id={user_id}")
-            await websocket.send_json(
-                ErrorResponse(
-                    message="Response timeout",
-                    code="RESPONSE_TIMEOUT"
-                ).model_dump()
-            )
-            break
-
-        # 从 Redis 获取消息
-        pending = await message_buffer.get_pending(user_id, count=10)
-
-        if pending:
-            for stream_name, entries in pending:
-                for entry_id, fields in entries:
-                    # 跳过已处理的消息
-                    if entry_id in (processed_ids or set()):
-                        continue
-
-                    # 标记为已处理
-                    if processed_ids is not None:
-                        processed_ids.add(entry_id)
-
-                    # 解析消息
-                    try:
-                        data = json.loads(fields.get('data', '{}'))
-                    except json.JSONDecodeError:
-                        continue
-
-                    # 过滤会话 ID
-                    msg_conversation_id = data.get('conversation_id')
-                    if msg_conversation_id is not None and msg_conversation_id != current_conversation_id:
-                        continue
-
-                    msg_type = data.get('type')
-
-                    if msg_type == 'stream':
-                        # 流式响应
-                        await websocket.send_json(
-                            AssistantMessageResponse(
-                                content=data.get('content', ''),
-                                is_delta=data.get('is_delta', True),
-                                is_finished=False,
-                            ).model_dump()
-                        )
-
-                    elif msg_type == 'complete':
-                        # 完成响应
-                        complete_received = True
-                        await websocket.send_json(
-                            AssistantMessageResponse(
-                                content='',
-                                is_delta=False,
-                                is_finished=True,
-                            ).model_dump()
-                        )
-
-                        # 保存助手响应到数据库
-                        response_text = data.get('content', '')
-                        if response_text:
-                            # 检查定时任务意图
-                            task_intent = extract_task_intent(response_text)
-                            if task_intent:
-                                cleaned_response = remove_task_json_from_response(response_text)
-                                task_description = task_intent.get("description", content)
-                                await try_create_task_from_intent(
-                                    websocket=websocket,
-                                    user_id=user_id,
-                                    description=task_description,
-                                )
-                                response_text = cleaned_response
-
-                            assistant_msg = ChatHistory(
-                                user_id=user_id,
-                                conversation_id=current_conversation_id,
-                                role="assistant",
-                                content=response_text,
-                            )
-                            db.add(assistant_msg)
-                            await db.commit()
-
-                        # 消费已处理的消息
-                        await message_buffer.consume(user_id, count=len(processed_ids or set()))
-
-        # 短暂等待
-        await asyncio.sleep(0.05)
+    # 等待响应完成
+    # 设置 1 小时超时作为兜底，正常情况下由 iFlow 完成/断开触发结束
+    timeout = 3600.0  # 1小时
+    try:
+        await asyncio.wait_for(complete_event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout waiting for AI response: user_id={user_id}")
+        await websocket.send_json(
+            ErrorResponse(
+                message="Response timeout",
+                code="RESPONSE_TIMEOUT"
+            ).model_dump()
+        )
+    finally:
+        # 无论成功还是超时，都停止订阅任务
+        request_stop_event.set()
+        if redis_task:
+            try:
+                await asyncio.wait_for(redis_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                redis_task.cancel()
 
     # 更新会话的活动时间
     await conversation_service.touch_conversation(current_conversation_id, user_id)
 
-    return current_conversation_id, iflow_client
+    return current_conversation_id, None  # 返回 None 表示任务已清理
 
 
 async def handle_chat_message(
@@ -971,32 +995,150 @@ async def handle_chat_message(
     return current_conversation_id, iflow_client
 
 
+async def consume_cached_messages_for_conversation(
+    websocket: WebSocket,
+    user_id: int,
+    conversation_id: int,
+    message_buffer: MessageBuffer,
+    processed_ids: Set[str],
+) -> int:
+    """
+    消费指定会话在 Redis 中缓存的消息
+    
+    当 WebSocket 重连并切换会话时，消费该会话在断开期间缓存的消息。
+    
+    Args:
+        websocket: WebSocket 连接
+        user_id: 用户 ID
+        conversation_id: 目标会话 ID
+        message_buffer: 消息缓冲服务
+        processed_ids: 已处理的消息 ID 集合
+        
+    Returns:
+        int: 消费的消息数量
+    """
+    logger.debug(f"Consuming cached messages for user {user_id}, conversation {conversation_id}")
+    
+    consumed_count = 0
+    accumulated_content = ''
+    
+    try:
+        # 从 Redis Stream 获取待推送消息
+        pending = await message_buffer.get_pending(user_id, count=1000)
+
+        if pending:
+            entry_ids_to_delete = []
+            
+            for stream_name, entries in pending:
+                for entry_id, fields in entries:
+                    # 跳过已处理的消息
+                    if entry_id in processed_ids:
+                        continue
+
+                    # 解析消息
+                    try:
+                        data = json.loads(fields.get('data', '{}'))
+                    except json.JSONDecodeError:
+                        # 解析失败的消息直接删除
+                        processed_ids.add(entry_id)
+                        entry_ids_to_delete.append(entry_id)
+                        continue
+
+                    # 只处理属于当前会话的消息
+                    msg_conversation_id = data.get('conversation_id')
+                    if msg_conversation_id != conversation_id:
+                        # 不属于当前会话的消息跳过，不删除（留给对应的会话消费）
+                        continue
+
+                    # 标记为已处理
+                    processed_ids.add(entry_id)
+                    entry_ids_to_delete.append(entry_id)
+                    consumed_count += 1
+
+                    # 推送给 WebSocket
+                    msg_type = data.get('type')
+
+                    if msg_type == 'stream':
+                        # 流式响应
+                        content = data.get('content', '')
+                        if content:
+                            accumulated_content += content
+                        await websocket.send_json(
+                            AssistantMessageResponse(
+                                content=content,
+                                is_delta=data.get('is_delta', True),
+                                is_finished=False,
+                            ).model_dump()
+                        )
+
+                    elif msg_type == 'tool_call':
+                        # 工具调用
+                        await websocket.send_json(
+                            ToolCallResponse(
+                                tool_id=data.get('tool_id'),
+                                tool_name=data.get('tool_name', 'unknown'),
+                                arguments=data.get('arguments', {}),
+                                status=data.get('status', 'in_progress'),
+                                result=data.get('result'),
+                                error=data.get('error'),
+                            ).model_dump()
+                        )
+
+                    elif msg_type == 'complete':
+                        # 完成响应
+                        await websocket.send_json(
+                            AssistantMessageResponse(
+                                content='',
+                                is_delta=False,
+                                is_finished=True,
+                            ).model_dump()
+                        )
+
+            # 删除已处理的消息
+            if entry_ids_to_delete:
+                key = f"user:{user_id}:messages"
+                try:
+                    deleted_count = await message_buffer.redis.xdel(key, *entry_ids_to_delete)
+                    logger.info(f"Deleted {deleted_count} messages from {key}, expected {len(entry_ids_to_delete)}")
+                except Exception as del_err:
+                    logger.error(f"Error deleting messages from {key}: {del_err}")
+                    logger.error(f"Entry IDs: {entry_ids_to_delete}")
+                
+    except Exception as e:
+        logger.error(f"Error consuming cached messages: {e}", exc_info=True)
+        
+    return consumed_count
+
+
 async def handle_switch_conversation(
     websocket: WebSocket,
-    manager: WebSocketManager,
     user_id: int,
     conversation_id: int,
     db: AsyncSession,
     current_conversation_id: Optional[int],
-    iflow_client: Optional[IFlowClientService],
-) -> Tuple[Optional[int], Optional[IFlowClientService]]:
+    message_buffer: Optional[MessageBuffer] = None,
+    processed_ids: Optional[Set[str]] = None,
+) -> Optional[int]:
     """
     处理切换会话
 
-    切换会话时会断开旧的 iflow_client 连接，并使用目标会话的 working_directory 创建新连接。
-    这确保每个会话使用正确的工作目录。
+    切换会话时验证目标会话存在并属于该用户。
+    注意：iflow_client 由 IFlowProcessor 统一管理，会在处理下一条消息时
+    自动检测 working_directory 变化并重新创建连接。
+
+    新增：切换会话时会消费该会话在 Redis 中缓存的消息。
 
     Args:
         websocket: WebSocket 连接
-        manager: WebSocket 管理器
         user_id: 用户 ID
         conversation_id: 目标会话 ID
         db: 数据库会话
         current_conversation_id: 当前会话 ID
-        iflow_client: iFlow 客户端
+        message_buffer: 消息缓冲服务（可选，用于消费缓存消息）
+        processed_ids: 已处理的消息 ID 集合（可选）
 
     Returns:
-        Tuple[Optional[int], Optional[IFlowClientService]]: (切换后的会话 ID, 更新后的 iFlow 客户端)
+        Optional[int]: 切换后的会话 ID，失败则返回原会话 ID
     """
     logger.info(f"Switching conversation: user_id={user_id}, from={current_conversation_id}, to={conversation_id}")
 
@@ -1011,46 +1153,10 @@ async def handle_switch_conversation(
                 code="CONVERSATION_NOT_FOUND"
             ).model_dump()
         )
-        return current_conversation_id, iflow_client
+        return current_conversation_id
 
-    # 获取会话的工作目录（如果为空则使用默认值）
+    # 获取会话的工作目录（用于通知前端）
     working_directory = conversation.working_directory or "/root/.iflow-bot/workspace"
-
-    # 断开旧的 iflow_client 连接
-    if iflow_client is not None:
-        try:
-            await iflow_client.disconnect()
-            logger.info(f"Disconnected old iFlow client when switching conversation")
-        except Exception as e:
-            logger.warning(f"Error disconnecting old iFlow client: {e}")
-        iflow_client = None
-
-    # 使用会话的 working_directory 创建新的 iFlow 客户端
-    session_id = conversation.iflow_session_id if conversation.iflow_session_id else None
-    iflow_client = IFlowClientService(
-        cwd=working_directory,
-        session_id=session_id,
-    )
-    try:
-        await iflow_client.connect()
-        logger.info(f"Created new iFlow client with cwd={working_directory}, session_id={session_id}")
-
-        # 如果会话没有 iflow_session_id，保存新的 session_id
-        if not conversation.iflow_session_id and iflow_client.session_id:
-            await conversation_service.update_conversation_iflow_session(
-                conversation_id=conversation_id,
-                user_id=user_id,
-                iflow_session_id=iflow_client.session_id,
-            )
-    except Exception as e:
-        logger.error(f"Failed to create iFlow connection: {e}")
-        await websocket.send_json(
-            ErrorResponse(
-                message="Failed to connect to AI service",
-                code="IFLOW_ERROR"
-            ).model_dump()
-        )
-        return current_conversation_id, iflow_client
 
     # 发送切换成功响应
     await websocket.send_json(
@@ -1062,8 +1168,23 @@ async def handle_switch_conversation(
     )
 
     logger.info(f"Conversation switched: user_id={user_id}, conversation_id={conversation_id}, working_directory={working_directory}")
-
-    return conversation_id, iflow_client
+    
+    # 消费该会话在 Redis 中缓存的消息
+    if message_buffer and processed_ids is not None:
+        try:
+            consumed_count = await consume_cached_messages_for_conversation(
+                websocket=websocket,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                message_buffer=message_buffer,
+                processed_ids=processed_ids,
+            )
+            if consumed_count > 0:
+                logger.info(f"Consumed {consumed_count} cached messages for conversation {conversation_id}")
+        except Exception as e:
+            logger.warning(f"Error consuming cached messages for conversation {conversation_id}: {e}")
+    
+    return conversation_id
 
 
 async def try_create_task_from_intent(
