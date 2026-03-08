@@ -157,7 +157,7 @@ function App() {
         <Route path="/register" element={<Register />} />
 
         {/* 受保护路由 */}
-        <Route path="/chat" element={<ProtectedLayout><Chat /></ProtectedLayout>} />
+        <Route path="/chat/:conversationId?" element={<ProtectedLayout><Chat /></ProtectedLayout>} />
         <Route path="/tasks" element={<ProtectedLayout><TaskManager /></ProtectedLayout>} />
         <Route path="/notifications" element={<ProtectedLayout><NotificationsPage /></ProtectedLayout>} />
         <Route path="/test-directory" element={<ProtectedLayout><DirectoryTreeTestPage /></ProtectedLayout>} />

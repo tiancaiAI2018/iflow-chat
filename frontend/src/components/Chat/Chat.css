@@ -152,11 +152,68 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
+/* Message Attachments */
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.message-attachment-item {
+  max-width: 200px;
+}
+
+.message-attachment-image {
+  width: 100%;
+  max-width: 200px;
+  height: auto;
+  max-height: 150px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.message-attachment-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.message-attachment-file .file-icon {
+  font-size: 24px;
+}
+
+.message-attachment-file .file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.message-attachment-file .file-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.message-attachment-file .file-size {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
 /* Markdown Styles */
 .message-text pre {
   background: #1e1e1e;
   color: #d4d4d4;
-  padding: 12px;
+  padding: 12px 40px 12px 12px;  /* Extra right padding for copy button */
   border-radius: 8px;
   overflow-x: auto;
   margin: 8px 0;
@@ -314,13 +371,107 @@
   flex-shrink: 0;
 }
 
+/* Message Input Wrapper (包含附件预览和输入框) */
+.message-input-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Attachments Preview */
+.attachments-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fafafa;
+  border-radius: 12px;
+  border: 1px solid #e0e0e0;
+}
+
+.attachment-thumbnail {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.attachment-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attachment-file-icon {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.attachment-file-icon .file-ext {
+  color: #fff;
+  font-size: 10px;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #f44336;
+  color: #fff;
+  border: 2px solid #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  transition: transform 0.2s;
+}
+
+.attachment-remove:hover {
+  transform: scale(1.1);
+}
+
+.attachment-name {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  font-size: 9px;
+  padding: 2px 4px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .message-input-container {
   flex: 1;
   display: flex;
   gap: 8px;
   background: #f5f5f5;
   border-radius: 24px;
-  padding: 4px 4px 4px 16px;
+  padding: 4px;
   border: 1px solid #e0e0e0;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
@@ -328,6 +479,31 @@
 .message-input-container:focus-within {
   border-color: #667eea;
   box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+}
+
+/* Attachment Button */
+.attachment-button {
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  transition: background 0.2s, color 0.2s;
+}
+
+.attachment-button:hover:not(:disabled) {
+  background: rgba(102, 126, 234, 0.1);
+  color: #667eea;
+}
+
+.attachment-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .message-input {
@@ -512,4 +688,86 @@
     transform: scale(1);
     opacity: 1;
   }
+}
+
+/* Message Text Wrapper & Copy Button */
+.message-text-wrapper {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.copy-button {
+  background: rgba(0, 0, 0, 0.6);
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s ease;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+}
+
+.copy-button:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+/* Message-level copy button */
+.message-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+}
+
+.message-text-wrapper:hover .message-copy-btn,
+.message-copy-btn:focus {
+  opacity: 1;
+}
+
+/* Code Block Copy Button */
+.code-block-wrapper {
+  position: relative;
+  margin: 8px 0;
+}
+
+.code-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s ease;
+  color: #fff;
+  z-index: 5;
+}
+
+.code-block-wrapper:hover .code-copy-btn,
+.code-copy-btn:focus {
+  opacity: 1;
+}
+
+.code-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Message text wrapper for positioning copy button */
+.message-text-wrapper {
+  position: relative;
+}
+
+/* Adjust code block to make room for copy button */
+.message-text .hljs {
+  padding-right: 0;
 }

@@ -74,8 +74,8 @@ const Chat: React.FC<ChatProps> = ({
   }, [isConnected, currentConversationId, showWorkspaceModal, conversations.length, openWorkspaceModal]);
 
   // 处理发送消息（Context 内部会自动关联到当前会话，无会话时自动创建）
-  const handleSend = (content: string) => {
-    sendMessage(content);
+  const handleSend = (content: string, attachments?: any[]) => {
+    sendMessage(content, attachments);
   };
 
   // 获取空聊天时的显示标题
@@ -118,6 +118,7 @@ const Chat: React.FC<ChatProps> = ({
             toolCalls={msg.toolCalls}
             toolCall={msg.toolCall}
             created_at={msg.created_at}
+            attachments={msg.attachments}
           />
         ))}
         

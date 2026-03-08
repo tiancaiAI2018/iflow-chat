@@ -1,7 +1,26 @@
 import React, { createContext, useContext, useState, useCallback, useRef, ReactNode, useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import type { WSMessage, ToolCall, Notification, Conversation, ConversationResponse, Message } from '../types';
 import { apiService } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
+import type { Attachment } from '../components/Chat/MessageInput';
+
+// 文件数据格式（用于 WebSocket 传输）
+interface FileData {
+  name: string;
+  type: 'image' | 'file' | 'audio';
+  mimeType: string;
+  data: string; // base64 编码的数据
+  size: number;
+}
+
+// 消息中的附件信息（用于显示）
+interface MessageAttachment {
+  name: string;
+  type: 'image' | 'file';
+  size: number;
+  preview?: string;
+}
 
 interface ChatMessage {
   id: string;
@@ -12,6 +31,7 @@ interface ChatMessage {
   toolCalls?: ToolCall[];
   toolCall?: ToolCall;
   created_at: string;
+  attachments?: MessageAttachment[];
 }
 
 interface ChatContextValue {
@@ -20,7 +40,7 @@ interface ChatContextValue {
   isWaiting: boolean;
   isConnected: boolean;
   error: string | null;
-  sendMessage: (content: string) => void;
+  sendMessage: (content: string, attachments?: Attachment[]) => void;
   clearMessages: () => void;
   // 会话相关
   conversations: ConversationResponse[];
@@ -48,6 +68,8 @@ interface ChatProviderProps {
 
 export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotification }) => {
   const { user } = useAuth();
+  const navigate = useNavigate();
+  const { conversationId: urlConversationId } = useParams<{ conversationId?: string }>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isWaiting, setIsWaiting] = useState(false);
@@ -105,6 +127,9 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       // 设置当前会话ID
       setCurrentConversationId(conversationId);
       
+      // 更新 URL（不触发重新导航）
+      navigate(`/chat/${conversationId}`, { replace: true });
+      
       // 加载历史消息
       const historyMessages: ChatMessage[] = response.messages.map((msg: Message) => ({
         id: `msg-${msg.id}`,
@@ -127,7 +152,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       console.error('Failed to switch conversation:', err);
       setError('切换会话失败');
     }
-  }, [currentConversationId]);
+  }, [currentConversationId, navigate]);
 
   // 创建新会话（支持工作目录参数）
   const createNewConversation = useCallback(async (_firstMessage?: string): Promise<ConversationResponse | null> => {
@@ -166,6 +191,9 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       // 切换到新会话
       setCurrentConversationId(newConversation.id);
       
+      // 更新 URL
+      navigate(`/chat/${newConversation.id}`, { replace: true });
+      
       // 清空消息
       setMessages([]);
       setCurrentAssistantMessage('');
@@ -190,7 +218,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     } finally {
       setIsCreatingConversation(false);
     }
-  }, [user]);
+  }, [user, navigate]);
 
   // 删除会话
   const deleteConversation = useCallback(async (conversationId: number): Promise<boolean> => {
@@ -206,6 +234,8 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
         setCurrentConversationId(null);
         setCurrentAssistantMessage('');
         streamingContentRef.current = '';
+        // 更新 URL 到 /chat
+        navigate('/chat', { replace: true });
       }
       
       return true;
@@ -214,7 +244,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       setError('删除会话失败');
       return false;
     }
-  }, [currentConversationId]);
+  }, [currentConversationId, navigate]);
 
   // 处理 WebSocket 消息
   const handleWSMessage = useCallback((event: MessageEvent) => {
@@ -432,18 +462,14 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       setIsConnected(false);
       console.log('WebSocket disconnected');
 
-      // 自动重连（最多5次）
-      if (reconnectCountRef.current < 5) {
-        reconnectCountRef.current++;
-        reconnectTimeoutRef.current = setTimeout(() => {
-          if (mountedRef.current) {
-            console.log(`Reconnecting... attempt ${reconnectCountRef.current}`);
-            connect();
-          }
-        }, 3000);
-      } else {
-        setError('连接已断开，请刷新页面重试');
-      }
+      // 无限自动重连，每 1 秒尝试一次
+      reconnectCountRef.current++;
+      reconnectTimeoutRef.current = setTimeout(() => {
+        if (mountedRef.current) {
+          console.log(`Reconnecting... attempt ${reconnectCountRef.current}`);
+          connect();
+        }
+      }, 1000);
     };
   }, [user, handleWSMessage]);
 
@@ -468,10 +494,79 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     };
   }, [user, connect, loadConversations]);
 
-  // 发送消息
-  const sendMessage = useCallback(async (content: string) => {
-    if (!content.trim()) return;
+  // 用于跟踪是否已处理过 URL 恢复
+  const urlRestoredRef = useRef(false);
+
+  // 从 URL 恢复对话（页面刷新后）
+  useEffect(() => {
+    if (!user || !urlConversationId) {
+      urlRestoredRef.current = false;
+      return;
+    }
     
+    const conversationId = parseInt(urlConversationId, 10);
+    if (isNaN(conversationId)) return;
+    
+    // 已经恢复过或者当前已经是该对话
+    if (urlRestoredRef.current || currentConversationId === conversationId) return;
+    
+    // 会话列表还没加载完，等待
+    if (conversations.length === 0) return;
+    
+    // 检查会话是否存在
+    if (!conversations.find(c => c.id === conversationId)) {
+      // 会话不存在，跳转回 /chat
+      navigate('/chat', { replace: true });
+      return;
+    }
+    
+    // 恢复对话
+    urlRestoredRef.current = true;
+    switchConversation(conversationId);
+  }, [user, urlConversationId, conversations, currentConversationId, switchConversation, navigate]);
+
+  // 将附件转换为 FileData 格式
+  const convertAttachmentsToFileData = async (attachments: Attachment[]): Promise<FileData[]> => {
+    const fileDataList: FileData[] = [];
+
+    for (const attachment of attachments) {
+      const file = attachment.file;
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          // 移除 data:xxx;base64, 前缀
+          const base64Data = result.split(',')[1];
+          resolve(base64Data);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      // 确定文件类型
+      let fileType: 'image' | 'file' | 'audio' = 'file';
+      if (file.type.startsWith('image/')) {
+        fileType = 'image';
+      } else if (file.type.startsWith('audio/')) {
+        fileType = 'audio';
+      }
+
+      fileDataList.push({
+        name: file.name,
+        type: fileType,
+        mimeType: file.type,
+        data: base64,
+        size: file.size,
+      });
+    }
+
+    return fileDataList;
+  };
+
+  // 发送消息
+  const sendMessage = useCallback(async (content: string, attachments?: Attachment[]) => {
+    if (!content.trim() && (!attachments || attachments.length === 0)) return;
+
     // 检查 WebSocket 连接状态
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       setError('WebSocket 未连接，正在重连...');
@@ -492,7 +587,10 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
           setConversations(prev => [newConv, ...prev]);
           setCurrentConversationId(newConv.id);
           conversationIdToSend = newConv.id;
-          
+
+          // 更新 URL
+          navigate(`/chat/${newConv.id}`, { replace: true });
+
           // 发送切换会话消息到 WebSocket
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({
@@ -508,28 +606,47 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
       }
     }
 
-    // 添加用户消息到列表
+    // 处理附件转换为 FileData
+    let files: FileData[] = [];
+    if (attachments && attachments.length > 0) {
+      files = await convertAttachmentsToFileData(attachments);
+    }
+
+    // 添加用户消息到列表（包含附件预览）
     const userMessage: ChatMessage = {
       id: `msg-${Date.now()}`,
       role: 'user',
       content,
       created_at: new Date().toISOString(),
+      attachments: attachments?.map(a => ({
+        name: a.file.name,
+        type: a.type,
+        size: a.file.size,
+        preview: a.preview,
+      })),
     };
     setMessages((prev) => [...prev, userMessage]);
 
     // 通过 WebSocket 发送
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
+      const message: any = {
         type: 'chat',
         content,
         conversation_id: conversationIdToSend,
-      }));
+      };
+
+      // 如果有附件，添加到消息中
+      if (files.length > 0) {
+        message.files = files;
+      }
+
+      wsRef.current.send(JSON.stringify(message));
       setIsWaiting(true);
       setIsStreaming(true);
     } else {
       setError('连接已断开，请刷新页面重试');
     }
-  }, [currentConversationId]);
+  }, [currentConversationId, navigate]);
 
   // 清空消息（保留用于清空当前显示）
   const clearMessages = useCallback(() => {

@@ -64,14 +64,20 @@ async def lifespan(app: FastAPI):
 
     # Redis 输出处理器（用于断线重连恢复）
     _redis_output_handler = RedisOutputHandler(buffer=_message_buffer)
-    logger.info("RedisOutputHandler initialized")
+    await _redis_output_handler.start()  # 启动消费者协程，保证消息顺序
+    logger.info("RedisOutputHandler initialized and consumer started")
 
     # 数据库输出处理器（用于持久化 AI 响应）
     from backend.database import async_session_maker
     _db_output_handler = DBOutputHandler(db_session_factory=async_session_maker)
     logger.info("DBOutputHandler initialized")
 
-    # 5. 初始化 IFlow 业务逻辑处理器
+    # 5. 初始化 iFlow 连接池
+    from backend.services.connection_pool import start_connection_pool
+    await start_connection_pool()
+    logger.info("IFlowConnectionPool started")
+
+    # 6. 初始化 IFlow 业务逻辑处理器
     from backend.services.iflow_processor import get_iflow_processor
     _iflow_processor = get_iflow_processor()
     logger.info("IFlowProcessor initialized")
@@ -91,13 +97,22 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Error closing IFlowProcessor: {e}")
 
-    # 2. 断开输出处理器
+    # 2. 关闭 iFlow 连接池
+    from backend.services.connection_pool import stop_connection_pool
+    try:
+        await stop_connection_pool()
+        logger.info("IFlowConnectionPool stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping IFlowConnectionPool: {e}")
+
+    # 3. 断开输出处理器
     if _redis_output_handler:
         try:
-            _redis_output_handler.disconnect()
-            logger.info("RedisOutputHandler disconnected")
+            await _redis_output_handler.stop()  # 停止消费者协程
+            _redis_output_handler.disconnect()  # 断开信号订阅
+            logger.info("RedisOutputHandler stopped and disconnected")
         except Exception as e:
-            logger.warning(f"Error disconnecting RedisOutputHandler: {e}")
+            logger.warning(f"Error stopping RedisOutputHandler: {e}")
 
     if _db_output_handler:
         try:
@@ -106,7 +121,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Error closing DBOutputHandler: {e}")
 
-    # 3. 关闭 Redis 连接
+    # 4. 关闭 Redis 连接
     if _message_buffer:
         try:
             await _message_buffer.close()
@@ -114,7 +129,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Error closing Redis connection: {e}")
 
-    # 4. 关闭调度器
+    # 5. 关闭调度器
     shutdown_scheduler()
     logger.info("Scheduler shutdown")
 
@@ -151,7 +166,7 @@ async def health():
 
 
 # 导入并注册路由
-from backend.routers import auth, websocket, chat, tasks, notifications, conversations, directories, messages
+from backend.routers import auth, websocket, chat, tasks, notifications, conversations, directories, messages, acp
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(websocket.router, tags=["websocket"])
@@ -161,6 +176,7 @@ app.include_router(notifications.router, prefix="/api/notifications", tags=["not
 app.include_router(conversations.router, prefix="/api/conversations", tags=["conversations"])
 app.include_router(directories.router, prefix="/api/directories", tags=["directories"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
+app.include_router(acp.router, prefix="/api/acp", tags=["acp"])
 
 
 # ============ 获取全局资源的辅助函数 ============
