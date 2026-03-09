@@ -8,11 +8,16 @@ Redis 输出处理器
 - 所有信号处理函数只负责将消息放入队列
 - 单独的消费者协程按顺序处理队列中的消息
 - 避免多个 asyncio.create_task 导致的执行顺序问题
+
+优化：对普通文本消息进行批量累积发送，减少 Redis 网络 IO：
+- tool_call 和 complete 消息立即发送（保证用户体验）
+- 普通文本消息累积到一定数量或超时后批量发送
 """
 import asyncio
 import logging
-from typing import Optional, Any
-from dataclasses import dataclass
+import time
+from typing import Optional, Any, Dict, List
+from dataclasses import dataclass, field
 
 from backend.services.event_bus import EventBus
 from backend.services.message_buffer import MessageBuffer
@@ -20,11 +25,27 @@ from backend.services.message_buffer import MessageBuffer
 logger = logging.getLogger(__name__)
 
 
+# 批量发送配置
+BATCH_SIZE_THRESHOLD = 500  # 累积字符数阈值
+BATCH_TIME_THRESHOLD = 0.1  # 累积时间阈值（秒）
+
+
 @dataclass
 class QueuedMessage:
     """队列中的消息项"""
     signal_type: str  # 'ai_response', 'ai_complete', 'tool_call'
     kwargs: dict      # 信号参数
+
+
+@dataclass
+class BatchBuffer:
+    """批量消息缓冲区"""
+    user_id: int
+    conversation_id: Optional[int] = None
+    request_id: Optional[str] = None
+    content_parts: List[str] = field(default_factory=list)
+    total_chars: int = 0
+    first_message_time: float = field(default_factory=time.time)
 
 
 class RedisOutputHandler:
@@ -63,19 +84,36 @@ class RedisOutputHandler:
         self._consumer_task: Optional[asyncio.Task] = None
         # 停止标志
         self._stop_event = asyncio.Event()
+        
+        # 批量发送缓冲区：key = (user_id, conversation_id, request_id)
+        self._batch_buffers: Dict[tuple, BatchBuffer] = {}
+        # 批量刷新任务
+        self._flush_task: Optional[asyncio.Task] = None
 
         # 订阅信号
         self._subscribe_signals()
 
     async def start(self):
-        """启动消费者协程"""
+        """启动消费者协程和批量刷新任务"""
         if self._consumer_task is None:
             self._stop_event.clear()
             self._consumer_task = asyncio.create_task(self._consumer_loop())
-            logger.debug("RedisOutputHandler consumer started")
+            self._flush_task = asyncio.create_task(self._batch_flush_loop())
+            logger.debug("RedisOutputHandler consumer and flush task started")
 
     async def stop(self):
-        """停止消费者协程"""
+        """停止消费者协程和批量刷新任务"""
+        # 先刷新所有剩余的批量消息
+        await self._flush_all_batches()
+        
+        if self._flush_task:
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+            self._flush_task = None
+        
         if self._consumer_task:
             self._stop_event.set()
             # 放入一个空消息来唤醒消费者
@@ -151,7 +189,8 @@ class RedisOutputHandler:
         """
         处理 ai_response 信号
 
-        将流式响应推送到 Redis Stream。
+        对普通文本消息进行批量累积发送，减少 Redis 网络 IO。
+        如果消息包含 metadata.error 标记，则立即发送。
         """
         user_id = kwargs.get('user_id')
         content = kwargs.get('content', '')
@@ -160,37 +199,115 @@ class RedisOutputHandler:
         request_id = kwargs.get('request_id')
         metadata = kwargs.get('metadata')
 
-        # 构建消息
+        # 错误消息立即发送
+        if metadata and metadata.get('error'):
+            message = {
+                'type': 'stream',
+                'content': content,
+                'is_delta': False,
+            }
+            if conversation_id is not None:
+                message['conversation_id'] = conversation_id
+            if request_id is not None:
+                message['request_id'] = request_id
+            message['metadata'] = metadata
+            
+            try:
+                await self.buffer.push(user_id=user_id, message=message)
+                logger.debug(f"Pushed error ai_response to Redis for user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to push ai_response to Redis: {e}")
+            return
+
+        # 普通文本消息：累积到批量缓冲区
+        if not content:
+            return
+
+        buffer_key = (user_id, conversation_id, request_id)
+        
+        if buffer_key not in self._batch_buffers:
+            self._batch_buffers[buffer_key] = BatchBuffer(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                request_id=request_id,
+            )
+        
+        batch = self._batch_buffers[buffer_key]
+        batch.content_parts.append(content)
+        batch.total_chars += len(content)
+        
+        # 如果累积字符数超过阈值，立即刷新
+        if batch.total_chars >= BATCH_SIZE_THRESHOLD:
+            await self._flush_batch(buffer_key)
+
+    async def _flush_batch(self, buffer_key: tuple):
+        """刷新单个批量缓冲区"""
+        batch = self._batch_buffers.pop(buffer_key, None)
+        if not batch or not batch.content_parts:
+            return
+        
+        # 合并所有内容
+        combined_content = ''.join(batch.content_parts)
+        
         message = {
             'type': 'stream',
-            'content': content,
-            'is_delta': is_delta,
+            'content': combined_content,
+            'is_delta': True,
         }
-
-        if conversation_id is not None:
-            message['conversation_id'] = conversation_id
-        if request_id is not None:
-            message['request_id'] = request_id
-        if metadata:
-            message['metadata'] = metadata
-
+        
+        if batch.conversation_id is not None:
+            message['conversation_id'] = batch.conversation_id
+        if batch.request_id is not None:
+            message['request_id'] = batch.request_id
+        
         try:
-            await self.buffer.push(user_id=user_id, message=message)
-            logger.debug(f"Pushed ai_response to Redis for user {user_id}, request_id={request_id}")
+            await self.buffer.push(user_id=batch.user_id, message=message)
+            logger.debug(f"Flushed batch to Redis: user={batch.user_id}, chars={batch.total_chars}")
         except Exception as e:
-            logger.error(f"Failed to push ai_response to Redis: {e}")
+            logger.error(f"Failed to flush batch to Redis: {e}")
+
+    async def _flush_all_batches(self):
+        """刷新所有批量缓冲区"""
+        for buffer_key in list(self._batch_buffers.keys()):
+            await self._flush_batch(buffer_key)
+
+    async def _batch_flush_loop(self):
+        """定时刷新批量缓冲区"""
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.sleep(BATCH_TIME_THRESHOLD)
+                
+                # 检查所有缓冲区，刷新超时的
+                current_time = time.time()
+                keys_to_flush = []
+                
+                for buffer_key, batch in list(self._batch_buffers.items()):
+                    if current_time - batch.first_message_time >= BATCH_TIME_THRESHOLD:
+                        keys_to_flush.append(buffer_key)
+                
+                for key in keys_to_flush:
+                    await self._flush_batch(key)
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in batch flush loop: {e}")
 
     async def _handle_ai_complete(self, **kwargs):
         """
         处理 ai_complete 信号
 
-        将完整响应推送到 Redis Stream。
+        先刷新该请求的批量缓冲区，然后将完整响应推送到 Redis Stream。
         """
         user_id = kwargs.get('user_id')
         content = kwargs.get('content', '')
         conversation_id = kwargs.get('conversation_id')
         request_id = kwargs.get('request_id')
         metadata = kwargs.get('metadata')
+
+        # 先刷新该请求的批量缓冲区
+        buffer_key = (user_id, conversation_id, request_id)
+        await self._flush_batch(buffer_key)
 
         # 构建消息
         message = {
@@ -215,7 +332,8 @@ class RedisOutputHandler:
         """
         处理 tool_call 信号
 
-        将工具调用推送到 Redis Stream。
+        先刷新该请求的批量缓冲区，然后将工具调用推送到 Redis Stream。
+        这样可以确保工具调用消息的顺序正确。
         """
         user_id = kwargs.get('user_id')
         tool_id = kwargs.get('tool_id')
@@ -226,6 +344,10 @@ class RedisOutputHandler:
         error = kwargs.get('error')
         conversation_id = kwargs.get('conversation_id')
         request_id = kwargs.get('request_id')
+
+        # 先刷新该请求的批量缓冲区，确保工具调用前所有文本已发送
+        buffer_key = (user_id, conversation_id, request_id)
+        await self._flush_batch(buffer_key)
 
         # 构建消息
         message = {
