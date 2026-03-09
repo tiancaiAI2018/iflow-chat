@@ -315,6 +315,71 @@ const Header: React.FC<HeaderProps> = ({
 
             <div className="mobile-menu-divider"></div>
 
+            {/* Mobile Settings Section */}
+            <div className="mobile-settings-section">
+              {/* 显示工具消息开关 */}
+              <div className="mobile-setting-item">
+                <span className="menu-setting-label">显示工具/计划消息</span>
+                <button 
+                  className={`toggle-switch ${showToolMessages ? 'active' : ''}`}
+                  onClick={onToggleShowToolMessages}
+                  title={showToolMessages ? '点击隐藏工具和计划消息' : '点击显示工具和计划消息'}
+                >
+                  <span className="toggle-slider"></span>
+                </button>
+              </div>
+              
+              {/* ACP 端口列表 */}
+              <div className="mobile-acp-section">
+                <div className="acp-header">
+                  <span className="menu-icon">🔌</span>
+                  <span>ACP 连接</span>
+                  <button 
+                    className="acp-refresh-btn"
+                    onClick={loadACPInfo}
+                    disabled={isLoadingACP}
+                    title="刷新"
+                  >
+                    {isLoadingACP ? '⏳' : '🔄'}
+                  </button>
+                </div>
+                
+                {acpInfo && acpInfo.ports.length > 0 ? (
+                  <div className="acp-list">
+                    {acpInfo.ports.map((port) => (
+                      <div 
+                        key={port} 
+                        className={`acp-item ${port === acpInfo.current_port ? 'current' : 'old'}`}
+                      >
+                        <div className="acp-port-info">
+                          <span className="acp-port">端口 {port}</span>
+                          <span className="acp-status">
+                            {port === acpInfo.current_port ? '● 当前' : '○ 旧连接'}
+                          </span>
+                        </div>
+                        {port !== acpInfo.current_port && (
+                          <button
+                            className="acp-kill-btn"
+                            onClick={() => handleKillPort(port)}
+                            disabled={killingPort === port}
+                            title="停止此连接"
+                          >
+                            {killingPort === port ? '⏳' : '✕'}
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="acp-empty">
+                    {isLoadingACP ? '加载中...' : '暂无活跃连接'}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mobile-menu-divider"></div>
+
             {/* Logout Button */}
             <button className="mobile-logout-btn" onClick={handleLogout}>
               <span className="menu-icon">🚪</span>
