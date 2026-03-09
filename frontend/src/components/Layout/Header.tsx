@@ -1,22 +1,28 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useNotifications } from '../../hooks/useNotifications';
 import { NotificationBar } from '../Notification';
 import NewChatButton from '../Chat/NewChatButton';
 import HistoryButton from '../Chat/HistoryButton';
+import { apiService } from '../../services/api';
+import type { ACPInfoResponse } from '../../types';
 import './Layout.css';
 
 interface HeaderProps {
   onToggleNotification?: () => void;
   showNotificationPopup?: boolean;
   onOpenConversationDrawer?: () => void;
+  showToolMessages?: boolean;
+  onToggleShowToolMessages?: () => void;
 }
 
 const Header: React.FC<HeaderProps> = ({ 
   onToggleNotification, 
   showNotificationPopup = false,
   onOpenConversationDrawer,
+  showToolMessages = true,
+  onToggleShowToolMessages,
 }) => {
   const { user, logout } = useAuth();
   const { unreadCount, fetchNotifications } = useNotifications();
@@ -24,6 +30,9 @@ const Header: React.FC<HeaderProps> = ({
   const navigate = useNavigate();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [acpInfo, setAcpInfo] = useState<ACPInfoResponse | null>(null);
+  const [isLoadingACP, setIsLoadingACP] = useState(false);
+  const [killingPort, setKillingPort] = useState<number | null>(null);
 
   // 定期刷新未读数量
   useEffect(() => {
@@ -39,6 +48,45 @@ const Header: React.FC<HeaderProps> = ({
     setIsMobileMenuOpen(false);
     setIsUserMenuOpen(false);
   }, [location.pathname]);
+
+  // 加载 ACP 信息
+  const loadACPInfo = useCallback(async () => {
+    if (!user) return;
+    setIsLoadingACP(true);
+    try {
+      const info = await apiService.getACPInfo();
+      setAcpInfo(info);
+    } catch (err) {
+      console.error('Failed to load ACP info:', err);
+    } finally {
+      setIsLoadingACP(false);
+    }
+  }, [user]);
+
+  // 用户菜单打开时加载 ACP 信息
+  useEffect(() => {
+    if (isUserMenuOpen) {
+      loadACPInfo();
+    }
+  }, [isUserMenuOpen, loadACPInfo]);
+
+  // Kill ACP 端口
+  const handleKillPort = async (port: number) => {
+    if (port === acpInfo?.current_port) {
+      return; // 不能 kill 当前端口
+    }
+    setKillingPort(port);
+    try {
+      await apiService.killACPPort(port);
+      // 重新加载 ACP 信息
+      await loadACPInfo();
+    } catch (err: any) {
+      console.error('Failed to kill port:', err);
+      alert(err.response?.data?.detail || '停止端口失败');
+    } finally {
+      setKillingPort(null);
+    }
+  };
 
   // 点击外部关闭用户菜单
   useEffect(() => {
@@ -147,6 +195,71 @@ const Header: React.FC<HeaderProps> = ({
               <span className="user-email">{user?.email || ''}</span>
             </div>
             <div className="menu-divider"></div>
+            
+            {/* 显示工具消息开关 */}
+            <div className="menu-setting-item">
+              <span className="menu-setting-label">显示工具/计划消息</span>
+              <button 
+                className={`toggle-switch ${showToolMessages ? 'active' : ''}`}
+                onClick={onToggleShowToolMessages}
+                title={showToolMessages ? '点击隐藏工具和计划消息' : '点击显示工具和计划消息'}
+              >
+                <span className="toggle-slider"></span>
+              </button>
+            </div>
+            
+            <div className="menu-divider"></div>
+            
+            {/* ACP 端口列表 */}
+            <div className="acp-section">
+              <div className="acp-header">
+                <span className="menu-icon">🔌</span>
+                <span>ACP 连接</span>
+                <button 
+                  className="acp-refresh-btn"
+                  onClick={loadACPInfo}
+                  disabled={isLoadingACP}
+                  title="刷新"
+                >
+                  {isLoadingACP ? '⏳' : '🔄'}
+                </button>
+              </div>
+              
+              {acpInfo && acpInfo.ports.length > 0 ? (
+                <div className="acp-list">
+                  {acpInfo.ports.map((port, index) => (
+                    <div 
+                      key={port} 
+                      className={`acp-item ${port === acpInfo.current_port ? 'current' : 'old'}`}
+                    >
+                      <div className="acp-port-info">
+                        <span className="acp-port">端口 {port}</span>
+                        <span className="acp-status">
+                          {port === acpInfo.current_port ? '● 当前' : '○ 旧连接'}
+                        </span>
+                      </div>
+                      {port !== acpInfo.current_port && (
+                        <button
+                          className="acp-kill-btn"
+                          onClick={() => handleKillPort(port)}
+                          disabled={killingPort === port}
+                          title="停止此连接"
+                        >
+                          {killingPort === port ? '⏳' : '✕'}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="acp-empty">
+                  {isLoadingACP ? '加载中...' : '暂无活跃连接'}
+                </div>
+              )}
+            </div>
+            
+            <div className="menu-divider"></div>
+            
             <button className="menu-item" onClick={handleLogout}>
               <span className="menu-icon">🚪</span>
               退出登录

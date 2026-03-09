@@ -18,6 +18,9 @@ import type {
   ConversationResponse,
   ConversationListResponse,
   ConversationDetailResponse,
+  ACPInfoResponse,
+  KillPortRequest,
+  KillPortResponse,
 } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
@@ -249,6 +252,24 @@ class ApiService {
     message: string;
   }> {
     const response = await this.api.post('/messages/consume', null, { params: { count } });
+    return response.data;
+  }
+
+  // ========== ACP 端口管理 ==========
+
+  /**
+   * 获取当前用户的 ACP 端口信息
+   */
+  async getACPInfo(): Promise<ACPInfoResponse> {
+    const response = await this.api.get<ACPInfoResponse>('/acp/my-ports');
+    return response.data;
+  }
+
+  /**
+   * Kill 指定的 ACP 端口
+   */
+  async killACPPort(port: number): Promise<KillPortResponse> {
+    const response = await this.api.post<KillPortResponse>('/acp/kill-port', { port });
     return response.data;
   }
 }

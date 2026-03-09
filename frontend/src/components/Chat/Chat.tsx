@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { useChatContext } from '../../contexts/ChatContext';
 import Message from './Message';
 import MessageInput from './MessageInput';
@@ -11,6 +12,7 @@ interface ChatProps {
   isConversationDrawerOpen?: boolean;
   onOpenConversationDrawer?: () => void;
   onCloseConversationDrawer?: () => void;
+  showToolMessages?: boolean;
 }
 
 const Chat: React.FC<ChatProps> = ({ 
@@ -18,6 +20,7 @@ const Chat: React.FC<ChatProps> = ({
   isConversationDrawerOpen = false,
   onOpenConversationDrawer,
   onCloseConversationDrawer,
+  showToolMessages = true,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
@@ -30,6 +33,7 @@ const Chat: React.FC<ChatProps> = ({
     isConnected,
     error,
     sendMessage,
+    cancelMessage,
     // 会话相关状态
     currentConversation,
     currentConversationId,
@@ -62,8 +66,18 @@ const Chat: React.FC<ChatProps> = ({
     setConnectionStatus(isConnected ? 'connected' : 'connecting');
   }, [isConnected]);
 
+  // 获取 URL 中的 conversationId
+  const { conversationId: urlConversationId } = useParams<{ conversationId?: string }>();
+
   // 连接成功但没有当前会话时，自动弹出工作目录选择对话框
+  // 注意：如果 URL 中有 conversationId，说明正在恢复对话，不要弹出
   useEffect(() => {
+    // URL 中有 conversationId，等待恢复完成，不弹出
+    if (urlConversationId) return;
+    
+    // 正在加载会话列表，等待加载完成
+    if (isLoadingConversations) return;
+    
     if (isConnected && !currentConversationId && !showWorkspaceModal && conversations.length === 0) {
       // 延迟一点弹出，避免页面加载时的闪烁
       const timer = setTimeout(() => {
@@ -71,7 +85,7 @@ const Chat: React.FC<ChatProps> = ({
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [isConnected, currentConversationId, showWorkspaceModal, conversations.length, openWorkspaceModal]);
+  }, [isConnected, currentConversationId, showWorkspaceModal, conversations.length, openWorkspaceModal, urlConversationId, isLoadingConversations]);
 
   // 处理发送消息（Context 内部会自动关联到当前会话，无会话时自动创建）
   const handleSend = (content: string, attachments?: any[]) => {
@@ -107,7 +121,9 @@ const Chat: React.FC<ChatProps> = ({
           </div>
         )}
 
-        {messages.map((msg) => (
+        {messages
+          .filter((msg) => showToolMessages || msg.role !== 'tool_call')
+          .map((msg) => (
           <Message
             key={msg.id}
             id={msg.id}
@@ -141,6 +157,20 @@ const Chat: React.FC<ChatProps> = ({
         <div className="chat-error">
           <span>{error}</span>
           <button onClick={() => window.location.reload()}>重新连接</button>
+        </div>
+      )}
+
+      {/* 取消按钮（正在响应时显示） */}
+      {(isStreaming || isWaiting) && (
+        <div className="cancel-button-container">
+          <button 
+            className="cancel-button"
+            onClick={cancelMessage}
+            title="取消当前任务"
+          >
+            <span className="cancel-icon">⏹</span>
+            <span>停止生成</span>
+          </button>
         </div>
       )}
 

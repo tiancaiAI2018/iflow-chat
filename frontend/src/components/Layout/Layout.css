@@ -623,3 +623,164 @@
     display: none;
   }
 }
+
+/* ============================================
+   ACP 端口列表样式
+   ============================================ */
+
+.acp-section {
+  padding: 8px 0;
+}
+
+.acp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #666;
+}
+
+.acp-refresh-btn {
+  margin-left: auto;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.acp-refresh-btn:hover {
+  opacity: 1;
+}
+
+.acp-refresh-btn:disabled {
+  cursor: not-allowed;
+}
+
+.acp-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.acp-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.acp-item:last-child {
+  border-bottom: none;
+}
+
+.acp-item.current {
+  background: #f0f8ff;
+}
+
+.acp-item.old {
+  background: #fff9f0;
+}
+
+.acp-port-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.acp-port {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #333;
+}
+
+.acp-status {
+  font-size: 0.75rem;
+  color: #888;
+}
+
+.acp-item.current .acp-status {
+  color: #4caf50;
+}
+
+.acp-item.old .acp-status {
+  color: #ff9800;
+}
+
+.acp-kill-btn {
+  padding: 6px 10px;
+  background: #ff4757;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.acp-kill-btn:hover {
+  background: #ff3344;
+}
+
+.acp-kill-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.acp-empty {
+  padding: 16px;
+  text-align: center;
+  color: #999;
+  font-size: 0.85rem;
+}
+
+/* ============================================
+   开关样式
+   ============================================ */
+
+.menu-setting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+}
+
+.menu-setting-label {
+  font-size: 0.9rem;
+  color: #333;
+}
+
+.toggle-switch {
+  position: relative;
+  width: 48px;
+  height: 26px;
+  background: #e0e0e0;
+  border: none;
+  border-radius: 13px;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.toggle-switch.active {
+  background: #667eea;
+}
+
+.toggle-slider {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.3s;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.toggle-switch.active .toggle-slider {
+  transform: translateX(22px);
+}

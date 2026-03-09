@@ -1,0 +1,420 @@
+"""
+iFlow 连接池管理器
+
+管理用户连接的生命周期，支持：
+1. 同用户同会话：复用现有连接
+2. 同用户不同会话：延迟关闭旧连接，创建新连接
+3. 空闲超时清理：长时间未使用的连接自动关闭
+"""
+import asyncio
+import logging
+from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+
+from backend.services.iflow_client import IFlowClientService
+from backend.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ConnectionEntry:
+    """连接条目"""
+    client: IFlowClientService
+    user_id: int
+    conversation_id: int
+    port: int
+    created_at: datetime = field(default_factory=datetime.now)
+    last_used_at: datetime = field(default_factory=datetime.now)
+    is_shutting_down: bool = False  # 标记是否正在关闭中
+    pending_close: bool = False  # 标记是否待关闭（会话切换时）
+
+
+class IFlowConnectionPool:
+    """
+    iFlow 连接池管理器
+    
+    管理策略：
+    1. 每个用户只能有一个活跃连接
+    2. 同用户同会话：复用连接
+    3. 同用户切换会话：延迟关闭旧连接（等输出完成）
+    4. 空闲超时：30分钟未使用自动关闭
+    
+    使用示例：
+        pool = IFlowConnectionPool()
+        
+        # 获取或创建连接
+        client = await pool.get_connection(
+            user_id=1,
+            conversation_id=100,
+            working_directory="/path/to/workspace"
+        )
+        
+        # 定期清理空闲连接
+        await pool.cleanup_idle_connections()
+    """
+    
+    def __init__(
+        self,
+        idle_timeout_minutes: int = 30,
+        shutdown_delay_seconds: int = 5,
+    ):
+        """
+        初始化连接池
+        
+        Args:
+            idle_timeout_minutes: 空闲超时时间（分钟），默认 30 分钟
+            shutdown_delay_seconds: 切换会话时延迟关闭旧连接的时间（秒），默认 5 秒
+        """
+        self.idle_timeout = timedelta(minutes=idle_timeout_minutes)
+        self.shutdown_delay = shutdown_delay_seconds
+        
+        # user_id -> ConnectionEntry
+        self._connections: Dict[int, ConnectionEntry] = {}
+        
+        # 保护连接池操作的锁
+        self._lock = asyncio.Lock()
+        
+        # 后台清理任务
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._running = False
+        
+        logger.info(f"IFlowConnectionPool initialized: idle_timeout={idle_timeout_minutes}min, shutdown_delay={shutdown_delay_seconds}s")
+    
+    async def start(self):
+        """启动连接池（开始后台清理任务）"""
+        if self._running:
+            return
+        self._running = True
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        logger.info("IFlowConnectionPool started")
+    
+    async def stop(self):
+        """停止连接池（关闭所有连接）"""
+        self._running = False
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+        
+        # 关闭所有连接
+        async with self._lock:
+            for user_id, entry in list(self._connections.items()):
+                try:
+                    await entry.client.disconnect()
+                    logger.info(f"Closed connection for user {user_id}")
+                except Exception as e:
+                    logger.warning(f"Error closing connection for user {user_id}: {e}")
+            self._connections.clear()
+        
+        logger.info("IFlowConnectionPool stopped")
+    
+    async def get_connection(
+        self,
+        user_id: int,
+        conversation_id: int,
+        working_directory: str,
+    ) -> IFlowClientService:
+        """
+        获取或创建连接
+        
+        策略：
+        1. 用户无连接 → 创建新连接
+        2. 用户有连接且会话相同 → 复用连接，更新 last_used_at
+        3. 用户有连接但会话不同 → 延迟关闭旧连接，创建新连接
+        
+        Args:
+            user_id: 用户 ID
+            conversation_id: 会话 ID
+            working_directory: 工作目录
+            
+        Returns:
+            IFlowClientService: 连接实例
+        """
+        async with self._lock:
+            entry = self._connections.get(user_id)
+            
+            # 情况 1: 用户无连接
+            if entry is None:
+                return await self._create_connection(user_id, conversation_id, working_directory)
+            
+            # 情况 2: 同用户同会话 → 复用
+            if entry.conversation_id == conversation_id and entry.client.is_connected:
+                entry.last_used_at = datetime.now()
+                logger.debug(f"Reusing connection for user {user_id}, conversation {conversation_id}")
+                return entry.client
+            
+            # 情况 3: 同用户不同会话 → 延迟关闭旧连接，创建新连接
+            if entry.conversation_id != conversation_id:
+                logger.info(
+                    f"User {user_id} switching conversation: "
+                    f"{entry.conversation_id} -> {conversation_id}"
+                )
+                # 标记旧连接待关闭
+                entry.pending_close = True
+                # 异步延迟关闭（不阻塞当前请求）
+                asyncio.create_task(
+                    self._delayed_close(user_id, entry, self.shutdown_delay)
+                )
+                # 创建新连接
+                return await self._create_connection(user_id, conversation_id, working_directory)
+            
+            # 情况 4: 连接已断开 → 重建
+            if not entry.client.is_connected:
+                logger.info(f"Connection for user {user_id} is disconnected, recreating")
+                await self._remove_connection(user_id)
+                return await self._create_connection(user_id, conversation_id, working_directory)
+            
+            # 默认返回现有连接
+            entry.last_used_at = datetime.now()
+            return entry.client
+    
+    async def _create_connection(
+        self,
+        user_id: int,
+        conversation_id: int,
+        working_directory: str,
+    ) -> IFlowClientService:
+        """
+        创建新连接
+        
+        Args:
+            user_id: 用户 ID
+            conversation_id: 会话 ID
+            working_directory: 工作目录
+            
+        Returns:
+            IFlowClientService: 新创建的连接实例
+        """
+        client = IFlowClientService(
+            cwd=working_directory,
+            user_id=user_id,
+        )
+        
+        await client.connect()
+        
+        # 记录连接
+        entry = ConnectionEntry(
+            client=client,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            port=client._port,
+        )
+        self._connections[user_id] = entry
+        
+        logger.info(
+            f"Created new connection: user={user_id}, "
+            f"conversation={conversation_id}, port={client._port}"
+        )
+        
+        return client
+    
+    async def _delayed_close(self, user_id: int, entry: ConnectionEntry, delay: int):
+        """
+        延迟关闭连接（等待可能的输出完成）
+        
+        Args:
+            user_id: 用户 ID
+            entry: 连接条目
+            delay: 延迟时间（秒）
+        """
+        entry.is_shutting_down = True
+        logger.debug(f"Scheduling delayed close for user {user_id} in {delay}s")
+        
+        try:
+            # 等待一段时间，让旧连接完成可能的输出
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        
+        # 直接关闭旧的连接（不管是否还在池中）
+        # 因为用户可能已经切换到新会话，_connections[user_id] 已经是新连接
+        try:
+            await entry.client.disconnect()
+            logger.info(f"Delayed closed old connection for user {user_id}, port={entry.port}")
+        except Exception as e:
+            logger.warning(f"Error in delayed close for user {user_id}, port={entry.port}: {e}")
+    
+    async def _remove_connection(self, user_id: int):
+        """移除并关闭连接"""
+        entry = self._connections.pop(user_id, None)
+        if entry:
+            try:
+                await entry.client.disconnect()
+                logger.info(f"Removed connection for user {user_id}, port={entry.port}")
+            except Exception as e:
+                logger.warning(f"Error removing connection for user {user_id}: {e}")
+    
+    async def release_connection(self, user_id: int, keep_alive: bool = True):
+        """
+        释放连接
+        
+        Args:
+            user_id: 用户 ID
+            keep_alive: 是否保持连接（用于空闲超时清理）
+        """
+        async with self._lock:
+            entry = self._connections.get(user_id)
+            if entry:
+                if keep_alive:
+                    # 更新最后使用时间
+                    entry.last_used_at = datetime.now()
+                else:
+                    # 立即关闭
+                    await self._remove_connection(user_id)
+    
+    async def interrupt_connection(self, user_id: int) -> bool:
+        """
+        中断用户当前正在执行的任务
+        
+        获取用户的活跃连接并调用 interrupt 方法取消当前任务。
+        中断后连接会被关闭，下次使用时需要重新连接。
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            bool: 是否中断成功
+        """
+        async with self._lock:
+            entry = self._connections.get(user_id)
+            
+            if entry is None:
+                logger.warning(f"No active connection for user {user_id} to interrupt")
+                return False
+            
+            if not entry.client.is_connected:
+                logger.warning(f"Connection for user {user_id} is not connected")
+                return False
+            
+            try:
+                logger.info(f"Interrupting connection for user {user_id}, port={entry.port}")
+                result = await entry.client.interrupt()
+                
+                if result:
+                    # 中断成功后，从池中移除连接（连接已断开）
+                    self._connections.pop(user_id, None)
+                    logger.info(f"Connection interrupted and removed for user {user_id}")
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error interrupting connection for user {user_id}: {e}")
+                # 出错时也移除连接
+                self._connections.pop(user_id, None)
+                return False
+    
+    def get_connection_entry(self, user_id: int) -> Optional[ConnectionEntry]:
+        """
+        获取用户的连接条目（不持有锁，用于快速检查）
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            Optional[ConnectionEntry]: 连接条目，如果不存在则返回 None
+        """
+        return self._connections.get(user_id)
+    
+    async def cleanup_idle_connections(self):
+        """
+        清理空闲超时的连接
+        
+        检查所有连接，关闭超过 idle_timeout 未使用的连接
+        """
+        now = datetime.now()
+        to_remove = []
+        
+        async with self._lock:
+            for user_id, entry in list(self._connections.items()):
+                # 跳过正在关闭中的连接
+                if entry.is_shutting_down:
+                    continue
+                
+                idle_time = now - entry.last_used_at
+                if idle_time > self.idle_timeout:
+                    to_remove.append((user_id, entry, idle_time))
+        
+        # 关闭空闲连接
+        for user_id, entry, idle_time in to_remove:
+            logger.info(
+                f"Closing idle connection: user={user_id}, "
+                f"idle_time={idle_time.total_seconds():.0f}s, port={entry.port}"
+            )
+            async with self._lock:
+                if self._connections.get(user_id) is entry:
+                    await self._remove_connection(user_id)
+    
+    async def _cleanup_loop(self):
+        """后台清理循环"""
+        while self._running:
+            try:
+                # 每 5 分钟检查一次空闲连接
+                await asyncio.sleep(300)
+                await self.cleanup_idle_connections()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in cleanup loop: {e}")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取连接池统计信息"""
+        now = datetime.now()
+        stats = {
+            "total_connections": len(self._connections),
+            "connections": []
+        }
+        
+        for user_id, entry in self._connections.items():
+            stats["connections"].append({
+                "user_id": user_id,
+                "conversation_id": entry.conversation_id,
+                "port": entry.port,
+                "age_seconds": (now - entry.created_at).total_seconds(),
+                "idle_seconds": (now - entry.last_used_at).total_seconds(),
+                "is_connected": entry.client.is_connected,
+                "is_shutting_down": entry.is_shutting_down,
+                "pending_close": entry.pending_close,
+            })
+        
+        return stats
+
+
+# 全局连接池实例
+_connection_pool: Optional[IFlowConnectionPool] = None
+
+
+def get_connection_pool() -> IFlowConnectionPool:
+    """
+    获取全局连接池实例
+    
+    Returns:
+        IFlowConnectionPool: 连接池实例
+    """
+    global _connection_pool
+    if _connection_pool is None:
+        # 从配置读取超时时间
+        idle_timeout = getattr(settings, 'IFLOW_IDLE_TIMEOUT_MINUTES', 30)
+        shutdown_delay = getattr(settings, 'IFLOW_SHUTDOWN_DELAY_SECONDS', 5)
+        _connection_pool = IFlowConnectionPool(
+            idle_timeout_minutes=idle_timeout,
+            shutdown_delay_seconds=shutdown_delay,
+        )
+    return _connection_pool
+
+
+async def start_connection_pool():
+    """启动全局连接池"""
+    pool = get_connection_pool()
+    await pool.start()
+
+
+async def stop_connection_pool():
+    """停止全局连接池"""
+    global _connection_pool
+    if _connection_pool:
+        await _connection_pool.stop()
+        _connection_pool = None

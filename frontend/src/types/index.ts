@@ -73,7 +73,8 @@ export type WSMessageType =
   | 'assistant_message'
   | 'tool_call'
   | 'notification'
-  | 'error';
+  | 'error'
+  | 'cancel_result';
 
 export interface WSMessage {
   type: WSMessageType;
@@ -88,6 +89,7 @@ export interface WSMessage {
   notification?: Notification;
   message?: string;
   token?: string;
+  success?: boolean;
 }
 
 // 定时任务类型
@@ -186,4 +188,27 @@ export interface DirectoryListResponse {
   success: boolean;
   directories: DirectoryNode[];
   root_path: string;
+}
+
+// ACP 端口相关类型
+export interface ACPInfoResponse {
+  user_id: number;
+  ports: number[];
+  current_port: number | null;
+  total_ports: number;
+  last_used: {
+    port: number;
+    cwd: string;
+    timestamp: number;
+  } | null;
+}
+
+export interface KillPortRequest {
+  port: number;
+}
+
+export interface KillPortResponse {
+  success: boolean;
+  message: string;
+  port: number;
 }

@@ -61,6 +61,11 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [showNotificationPopup, setShowNotificationPopup] = useState(false);
   const [isConversationDrawerOpen, setIsConversationDrawerOpen] = useState(false);
   const { addNotification, unreadCount } = useNotifications();
+  const [showToolMessages, setShowToolMessages] = useState(() => {
+    // 从 localStorage 读取设置
+    const saved = localStorage.getItem('showToolMessages');
+    return saved !== null ? saved === 'true' : true;
+  });
 
   // 在通知页面时隐藏弹窗
   useEffect(() => {
@@ -81,6 +86,14 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     setIsConversationDrawerOpen(false);
   };
 
+  const toggleShowToolMessages = () => {
+    setShowToolMessages((prev) => {
+      const newValue = !prev;
+      localStorage.setItem('showToolMessages', String(newValue));
+      return newValue;
+    });
+  };
+
   // 克隆子元素并传递 onNotification 和会话抽屉 props
   const childrenWithProps = React.Children.map(children, (child) => {
     if (React.isValidElement(child)) {
@@ -89,6 +102,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         isConversationDrawerOpen?: boolean;
         onOpenConversationDrawer?: () => void;
         onCloseConversationDrawer?: () => void;
+        showToolMessages?: boolean;
       }>, {
         onNotification: (notification: { id: string; content: string; read: boolean; created_at: string; task_id?: string | null | undefined }) => {
           addNotification({
@@ -99,6 +113,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         isConversationDrawerOpen,
         onOpenConversationDrawer: openConversationDrawer,
         onCloseConversationDrawer: closeConversationDrawer,
+        showToolMessages,
       });
     }
     return child;
@@ -110,6 +125,8 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         onToggleNotification={toggleNotificationPopup}
         showNotificationPopup={showNotificationPopup}
         onOpenConversationDrawer={openConversationDrawer}
+        showToolMessages={showToolMessages}
+        onToggleShowToolMessages={toggleShowToolMessages}
       />
       <main className="app-main">
         {childrenWithProps}
