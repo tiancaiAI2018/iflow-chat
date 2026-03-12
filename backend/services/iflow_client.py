@@ -355,19 +355,34 @@ class IFlowClientService:
             f"Failed to connect to iFlow service after {self.max_reconnect_attempts} attempts: {last_error}"
         )
     
-    async def disconnect(self) -> None:
+    async def disconnect(self, stop_acp_process: bool = True) -> None:
         """
-        断开 WebSocket 连接
+        断开 WebSocket 连接，并可选择停止 ACP 进程
+        
+        Args:
+            stop_acp_process: 是否停止 ACP 进程并清理端口栈，默认 True
         """
+        # 先关闭 WebSocket 连接
         if self._client and self._is_connected:
             try:
                 await self._client.__aexit__(None, None, None)
-                logger.info("Disconnected from iFlow service")
+                logger.info(f"Disconnected WebSocket from iFlow service, port={self._port}")
             except Exception as e:
                 logger.error(f"Error disconnecting from iFlow service: {e}")
             finally:
                 self._client = None
                 self._is_connected = False
+        
+        # 如果需要，停止 ACP 进程并清理端口栈
+        if stop_acp_process and self._port is not None:
+            try:
+                await self._stop_acp_process(self._port)
+                self._remove_user_port(self.user_id, self._port)
+                logger.info(f"Stopped ACP process and cleaned port stack: user={self.user_id}, port={self._port}")
+            except Exception as e:
+                logger.warning(f"Error stopping ACP process on port {self._port}: {e}")
+            finally:
+                self._port = None
     
     # ==================== ACP 端口管理方法 ====================
     
