@@ -33,7 +33,6 @@ const Chat: React.FC<ChatProps> = ({
     isConnected,
     error,
     sendMessage,
-    cancelMessage,
     // 会话相关状态
     currentConversation,
     currentConversationId,
@@ -158,20 +157,6 @@ const Chat: React.FC<ChatProps> = ({
         <div className="chat-error">
           <span>{error}</span>
           <button onClick={() => window.location.reload()}>重新连接</button>
-        </div>
-      )}
-
-      {/* 取消按钮（正在响应时显示） */}
-      {(isStreaming || isWaiting) && (
-        <div className="cancel-button-container">
-          <button 
-            className="cancel-button"
-            onClick={cancelMessage}
-            title="取消当前任务"
-          >
-            <span className="cancel-icon">⏹</span>
-            <span>停止生成</span>
-          </button>
         </div>
       )}
 
