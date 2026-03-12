@@ -18,6 +18,9 @@ from datetime import datetime
 from backend.services.event_bus import EventBus
 from backend.services.iflow_client import IFlowClientService, MessageType
 from backend.services.connection_pool import get_connection_pool
+from backend.database import async_session_maker
+from backend.models.user import Conversation
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
@@ -96,13 +99,42 @@ class IFlowProcessor:
         logger.debug(f"Processing user_message: user_id={user_id}, request_id={request_id}, content={content[:50]}...")
 
         try:
-            # 通过连接池获取或创建连接
+            # 从数据库获取会话的 iflow_session_id（用于恢复上下文）
+            iflow_session_id = None
+            if conversation_id:
+                async with async_session_maker() as db:
+                    result = await db.execute(
+                        select(Conversation).where(Conversation.id == conversation_id)
+                    )
+                    conversation = result.scalar_one_or_none()
+                    if conversation:
+                        iflow_session_id = conversation.iflow_session_id
+                        # 确保使用数据库中的工作目录
+                        working_directory = conversation.working_directory or working_directory
+                        logger.debug(f"Retrieved iflow_session_id={iflow_session_id} for conversation {conversation_id}")
+            
+            # 通过连接池获取或创建连接（传入 session_id 以恢复上下文）
             pool = get_connection_pool()
             iflow_client = await pool.get_connection(
                 user_id=user_id,
                 conversation_id=conversation_id or 0,
                 working_directory=working_directory,
+                iflow_session_id=iflow_session_id,  # 传入 session_id
             )
+            
+            # 如果连接后有新的 session_id，更新数据库
+            if iflow_client.session_id and iflow_client.session_id != iflow_session_id:
+                logger.info(f"Session ID changed: {iflow_session_id} -> {iflow_client.session_id}")
+                if conversation_id:
+                    async with async_session_maker() as db:
+                        result = await db.execute(
+                            select(Conversation).where(Conversation.id == conversation_id)
+                        )
+                        conversation = result.scalar_one_or_none()
+                        if conversation:
+                            conversation.iflow_session_id = iflow_client.session_id
+                            await db.commit()
+                            logger.info(f"Updated conversation {conversation_id} with session_id={iflow_client.session_id}")
 
             # 更新会话元数据
             self._sessions[user_id] = ProcessorSession(

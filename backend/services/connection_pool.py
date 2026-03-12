@@ -109,6 +109,7 @@ class IFlowConnectionPool:
         user_id: int,
         conversation_id: int,
         working_directory: str,
+        iflow_session_id: Optional[str] = None,
     ) -> IFlowClientService:
         """
         获取或创建连接
@@ -123,6 +124,7 @@ class IFlowConnectionPool:
             user_id: 用户 ID
             conversation_id: 会话 ID
             working_directory: 工作目录
+            iflow_session_id: iFlow 会话 ID（可选，用于恢复上下文）
             
         Returns:
             IFlowClientService: 连接实例
@@ -132,7 +134,7 @@ class IFlowConnectionPool:
             
             # 情况 1: 用户无连接
             if entry is None:
-                return await self._create_connection(user_id, conversation_id, working_directory)
+                return await self._create_connection(user_id, conversation_id, working_directory, iflow_session_id)
             
             # 情况 2: 同用户同会话且连接可用 → 复用
             if entry.conversation_id == conversation_id and entry.client.is_connected:
@@ -151,13 +153,14 @@ class IFlowConnectionPool:
                 logger.info(f"Connection for user {user_id} disconnected, creating new connection")
             
             # 创建新连接（IFlowClientService.connect() 会自动将新端口压栈）
-            return await self._create_connection(user_id, conversation_id, working_directory)
+            return await self._create_connection(user_id, conversation_id, working_directory, iflow_session_id)
     
     async def _create_connection(
         self,
         user_id: int,
         conversation_id: int,
         working_directory: str,
+        iflow_session_id: Optional[str] = None,
     ) -> IFlowClientService:
         """
         创建新连接
@@ -174,6 +177,7 @@ class IFlowConnectionPool:
             user_id: 用户 ID
             conversation_id: 会话 ID
             working_directory: 工作目录
+            iflow_session_id: iFlow 会话 ID（可选，用于恢复上下文）
             
         Returns:
             IFlowClientService: 新创建的连接实例
@@ -203,6 +207,7 @@ class IFlowConnectionPool:
         client = IFlowClientService(
             cwd=working_directory,
             user_id=user_id,
+            session_id=iflow_session_id,  # 传入 session_id 以恢复上下文
         )
         
         await client.connect()
@@ -221,7 +226,7 @@ class IFlowConnectionPool:
         logger.info(
             f"Created new connection: user={user_id}, "
             f"conversation={conversation_id}, port={client._port}, "
-            f"port_stack={user_ports}"
+            f"session_id={client.session_id}, port_stack={user_ports}"
         )
         
         return client
