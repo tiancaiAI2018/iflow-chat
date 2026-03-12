@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
@@ -66,7 +66,50 @@ const copyToClipboard = async (text: string): Promise<boolean> => {
   }
 };
 
-// 渲染 Markdown 内容并添加复制按钮
+// 图片预览模态框组件
+const ImagePreviewModal: React.FC<{
+  isOpen: boolean;
+  src: string | null;
+  alt: string;
+  onClose: () => void;
+}> = ({ isOpen, src, alt, onClose }) => {
+  if (!isOpen || !src) return null;
+
+  const handleDownload = async () => {
+    try {
+      const response = await fetch(src);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = alt || 'image.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Download failed:', err);
+      // Fallback: 直接打开图片
+      window.open(src, '_blank');
+    }
+  };
+
+  return (
+    <div className="image-preview-overlay" onClick={onClose}>
+      <div className="image-preview-container" onClick={(e) => e.stopPropagation()}>
+        <button className="image-preview-close" onClick={onClose}>✕</button>
+        <img src={src} alt={alt} className="image-preview-img" />
+        <div className="image-preview-actions">
+          <button className="image-preview-btn" onClick={handleDownload}>
+            ⬇️ 下载图片
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 渲染 Markdown 内容并添加复制按钮和图片处理
 const renderMarkdown = (content: string): string => {
   try {
     const html = marked.parse(content) as string;
@@ -140,23 +183,38 @@ const Message: React.FC<MessageProps> = ({
 }) => {
   const htmlContent = useMemo(() => renderMarkdown(content), [content]);
   const [isHovered, setIsHovered] = useState(false);
+  const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
+  const messageTextRef = useRef<HTMLDivElement>(null);
 
-  // 处理代码块复制按钮点击
-  const handleTextClick = async (e: React.MouseEvent) => {
+  // 处理图片点击 - 打开预览
+  const handleImageClick = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
+    // 首先检查代码块复制按钮
     if (target.classList.contains('code-copy-btn')) {
       const code = target.getAttribute('data-code') || '';
-      const success = await copyToClipboard(code);
-      if (success) {
-        target.innerHTML = '✓';
-        target.title = '已复制';
-        setTimeout(() => {
-          target.innerHTML = '📋';
-          target.title = '复制代码';
-        }, 2000);
-      }
+      copyToClipboard(code).then((success) => {
+        if (success) {
+          target.innerHTML = '✓';
+          target.title = '已复制';
+          setTimeout(() => {
+            target.innerHTML = '📋';
+            target.title = '复制代码';
+          }, 2000);
+        }
+      });
+      return;
     }
-  };
+    // 检查是否点击了图片
+    if (target.tagName === 'IMG') {
+      const img = target as HTMLImageElement;
+      setPreviewImage({ src: img.src, alt: img.alt || 'image' });
+    }
+  }, []);
+
+  // 关闭预览
+  const closePreview = useCallback(() => {
+    setPreviewImage(null);
+  }, []);
 
   // 格式化文件大小
   const formatFileSize = (bytes: number): string => {
@@ -251,9 +309,10 @@ const Message: React.FC<MessageProps> = ({
         {content && (
           <div className="message-text-wrapper">
             <div
+              ref={messageTextRef}
               className="message-text"
               dangerouslySetInnerHTML={{ __html: htmlContent }}
-              onClick={handleTextClick}
+              onClick={handleImageClick}
             />
             {/* 消息整体复制按钮 - 仅在非流式输出且悬停时显示 */}
             {!isStreaming && isHovered && content && (
@@ -266,6 +325,14 @@ const Message: React.FC<MessageProps> = ({
           <ToolCallList toolCalls={toolCalls} />
         )}
       </div>
+
+      {/* 图片预览模态框 */}
+      <ImagePreviewModal
+        isOpen={!!previewImage}
+        src={previewImage?.src || null}
+        alt={previewImage?.alt || ''}
+        onClose={closePreview}
+      />
     </div>
   );
 };
