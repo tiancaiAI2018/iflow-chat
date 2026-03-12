@@ -162,6 +162,10 @@ class IFlowConnectionPool:
         """
         创建新连接
         
+        创建新连接前会检查并清理空闲的旧连接：
+        - 如果旧连接正在输出（_is_streaming=True），等待 TaskFinish 后自动关闭
+        - 如果旧连接空闲（_is_streaming=False），立即关闭
+        
         IFlowClientService.connect() 会自动：
         1. 分配新端口
         2. 将新端口压入端口栈顶
@@ -174,6 +178,28 @@ class IFlowConnectionPool:
         Returns:
             IFlowClientService: 新创建的连接实例
         """
+        # 检查是否存在旧连接
+        old_entry = self._connections.get(user_id)
+        if old_entry:
+            # 如果旧连接空闲或已断开，直接关闭
+            if not old_entry.client._is_streaming or not old_entry.client.is_connected:
+                old_port = old_entry.port
+                logger.info(
+                    f"Closing idle/disconnected old connection: user={user_id}, "
+                    f"port={old_port}, is_streaming={old_entry.client._is_streaming}, "
+                    f"is_connected={old_entry.client.is_connected}"
+                )
+                try:
+                    await old_entry.client.disconnect()
+                except Exception as e:
+                    logger.warning(f"Error closing old connection port {old_port}: {e}")
+            else:
+                # 旧连接正在输出，不关闭，等待 TaskFinish 自动清理
+                logger.info(
+                    f"Old connection still streaming, will be cleaned by TaskFinish: "
+                    f"user={user_id}, port={old_entry.port}"
+                )
+        
         client = IFlowClientService(
             cwd=working_directory,
             user_id=user_id,

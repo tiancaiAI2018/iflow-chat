@@ -242,6 +242,9 @@ class IFlowClientService:
         # 端口和 URL 将在 connect 时动态分配
         self._port: Optional[int] = None
         self._url: Optional[str] = None
+        
+        # 流式输出状态标记
+        self._is_streaming = False
     
     async def connect(self) -> None:
         """
@@ -789,6 +792,9 @@ class IFlowClientService:
             )
             return
         
+        # 标记开始流式输出
+        self._is_streaming = True
+        
         try:
             # 如果启用任务检测，注入系统提示词
             actual_message = message
@@ -853,8 +859,10 @@ class IFlowClientService:
             
             # 记录查询成功
             self._record_success()
+            self._is_streaming = False  # 正常完成，标记流式输出结束
             
         except asyncio.TimeoutError:
+            self._is_streaming = False
             logger.error("Query timeout")
             self._record_failure("Query timeout")
             yield ChatMessage(
@@ -862,6 +870,7 @@ class IFlowClientService:
                 content="Query timeout, please try again"
             )
         except ConnectionError as e:
+            self._is_streaming = False
             logger.error(f"Connection error during query: {e}")
             self._is_connected = False
             self._record_failure(str(e))
@@ -875,6 +884,7 @@ class IFlowClientService:
                 content=f"Connection lost: {str(e)}. Please try again."
             )
         except Exception as e:
+            self._is_streaming = False
             logger.error(f"Error during query: {e}")
             # 检查是否是连接相关问题
             if "connection" in str(e).lower() or "websocket" in str(e).lower():
