@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useRef, ReactNode, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import type { WSMessage, ToolCall, Notification, Conversation, ConversationResponse, Message } from '../types';
+import type { WSMessage, ToolCall, Notification, Conversation, ConversationResponse, Message, PlanEntry } from '../types';
 import { apiService } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import type { Attachment } from '../components/Chat/MessageInput';
@@ -24,12 +24,13 @@ interface MessageAttachment {
 
 interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'tool_call';
+  role: 'user' | 'assistant' | 'tool_call' | 'plan';
   content: string;
   isStreaming?: boolean;
   isWaiting?: boolean;
   toolCalls?: ToolCall[];
   toolCall?: ToolCall;
+  planEntries?: PlanEntry[];
   created_at: string;
   attachments?: MessageAttachment[];
 }
@@ -341,6 +342,21 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
               ];
             }
           });
+          break;
+
+        case 'plan':
+          // 任务计划消息
+          const planEntries = message.entries || [];
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `plan-${Date.now()}`,
+              role: 'plan' as const,
+              content: '',
+              planEntries: planEntries,
+              created_at: new Date().toISOString(),
+            },
+          ]);
           break;
 
         case 'notification':

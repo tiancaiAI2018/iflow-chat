@@ -43,6 +43,9 @@ class EventBus:
     # 工具调用信号
     # 参数：user_id (int), tool_name (str), tool_args (dict), result (any, optional), metadata (dict, optional)
     tool_call = Signal('tool_call')
+    # 任务计划信号
+    # 参数：user_id (int), entries (list), conversation_id (int, optional), request_id (str, optional)
+    plan = Signal('plan')
 
     @classmethod
     def emit(cls, signal_name: str, sender=None, **kwargs):

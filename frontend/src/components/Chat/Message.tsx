@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
-import type { ToolCall } from '../../types';
+import type { ToolCall, PlanEntry } from '../../types';
 import { ToolCallList } from '../ToolCall/ToolCall';
 import ToolCallItem from '../ToolCall/ToolCall';
 import './Chat.css';
@@ -17,12 +17,13 @@ interface MessageAttachment {
 
 interface MessageProps {
   id: string;
-  role: 'user' | 'assistant' | 'tool_call';
+  role: 'user' | 'assistant' | 'tool_call' | 'plan';
   content: string;
   isStreaming?: boolean;
   isWaiting?: boolean;  // 等待后端响应中
   toolCalls?: ToolCall[];
   toolCall?: ToolCall;  // 单个工具调用（用于独立的工具调用消息）
+  planEntries?: PlanEntry[];  // 任务计划条目
   created_at: string;
   attachments?: MessageAttachment[];
 }
@@ -134,6 +135,7 @@ const Message: React.FC<MessageProps> = ({
   isWaiting,
   toolCalls,
   toolCall,
+  planEntries,
   attachments,
 }) => {
   const htmlContent = useMemo(() => renderMarkdown(content), [content]);
@@ -170,6 +172,33 @@ const Message: React.FC<MessageProps> = ({
         <div className="message-avatar">🔧</div>
         <div className="message-content">
           <ToolCallItem toolCall={toolCall} />
+        </div>
+      </div>
+    );
+  }
+
+  // 任务计划消息
+  if (role === 'plan' && planEntries && planEntries.length > 0) {
+    return (
+      <div className="message message-plan">
+        <div className="message-avatar">📋</div>
+        <div className="message-content">
+          <div className="plan-container">
+            <div className="plan-header">任务计划</div>
+            <div className="plan-entries">
+              {planEntries.map((entry, index) => (
+                <div key={index} className={`plan-entry plan-entry-${entry.status} plan-priority-${entry.priority}`}>
+                  <span className="plan-status-icon">
+                    {entry.status === 'completed' ? '✅' : entry.status === 'in_progress' ? '🔄' : '⏳'}
+                  </span>
+                  <span className="plan-content">{entry.content}</span>
+                  <span className={`plan-priority plan-priority-${entry.priority}`}>
+                    {entry.priority === 'high' ? '高' : entry.priority === 'medium' ? '中' : '低'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     );

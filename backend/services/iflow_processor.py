@@ -2,7 +2,7 @@
 iFlow 业务逻辑处理器
 
 订阅 EventBus 的 user_message 信号，调用 iFlow Client 进行 AI 对话，
-并发射 ai_response/ai_complete 信号实现业务逻辑与输入输出的解耦。
+并发射 ai_response/ai_complete/tool_call/plan 信号实现业务逻辑与输入输出的解耦。
 
 使用 IFlowConnectionPool 管理连接，支持：
 1. 同用户同会话复用连接
@@ -39,7 +39,7 @@ class IFlowProcessor:
     1. 订阅 user_message 信号，接收用户输入
     2. 通过连接池管理用户的 iFlow Client 连接
     3. 调用 iFlow 进行 AI 对话
-    4. 发射 ai_response 和 ai_complete 信号
+    4. 发射 ai_response、tool_call、plan 和 ai_complete 信号
 
     连接管理委托给 IFlowConnectionPool，支持：
     - 同用户同会话复用连接
@@ -128,6 +128,33 @@ class IFlowProcessor:
                         is_delta=msg.is_delta,
                         conversation_id=conversation_id,
                         request_id=request_id,  # 传递 request_id
+                    )
+
+                elif msg.type == MessageType.TOOL_CALL:
+                    # 工具调用消息 - 发射 tool_call 信号
+                    EventBus.emit(
+                        'tool_call',
+                        sender='iflow_processor',
+                        user_id=user_id,
+                        tool_id=msg.tool_id,
+                        tool_name=msg.tool_name,
+                        arguments=msg.tool_arguments,
+                        status=msg.tool_status,
+                        result=msg.tool_result,
+                        error=msg.tool_error,
+                        conversation_id=conversation_id,
+                        request_id=request_id,
+                    )
+
+                elif msg.type == MessageType.PLAN:
+                    # 任务计划消息 - 发射 plan 信号
+                    EventBus.emit(
+                        'plan',
+                        sender='iflow_processor',
+                        user_id=user_id,
+                        entries=msg.plan_entries,
+                        conversation_id=conversation_id,
+                        request_id=request_id,
                     )
 
                 elif msg.type == MessageType.TASK_FINISH:

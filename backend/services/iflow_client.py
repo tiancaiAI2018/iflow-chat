@@ -10,7 +10,7 @@ import re
 import os
 import socket
 import hashlib
-from typing import AsyncGenerator, Optional, Callable, Any, Dict
+from typing import AsyncGenerator, Optional, Callable, Any, Dict, List
 from dataclasses import dataclass
 from enum import Enum
 from datetime import datetime
@@ -22,6 +22,7 @@ from iflow_sdk import (
     AssistantMessage,
     ToolCallMessage,
     TaskFinishMessage,
+    PlanMessage,
     ToolCallStatus,
     StopReason,
 )
@@ -164,6 +165,7 @@ class MessageType(Enum):
     TEXT = "text"              # 文本消息
     TOOL_CALL = "tool_call"    # 工具调用
     TASK_FINISH = "task_finish"  # 任务完成
+    PLAN = "plan"              # 任务计划
     ERROR = "error"            # 错误消息
 
 
@@ -185,6 +187,9 @@ class ChatMessage:
     
     # 任务完成相关
     stop_reason: Optional[str] = None
+    
+    # 任务计划相关
+    plan_entries: Optional[List[Dict[str, Any]]] = None
 
 
 class IFlowClientService:
@@ -836,6 +841,20 @@ class IFlowClientService:
                     
                     yield tool_msg
                 
+                # 处理 PlanMessage（任务计划）
+                elif isinstance(msg, PlanMessage):
+                    plan_entries = [
+                        {
+                            'content': entry.content,
+                            'priority': entry.priority,
+                            'status': entry.status,
+                        }
+                        for entry in msg.entries
+                    ]
+                    yield ChatMessage(
+                        type=MessageType.PLAN,
+                        plan_entries=plan_entries,
+                    )
                 # 处理 TaskFinishMessage（任务完成）
                 elif isinstance(msg, TaskFinishMessage):
                     yield ChatMessage(

@@ -65,6 +65,17 @@ export interface ToolCall {
   result?: unknown;
 }
 
+// 任务计划类型
+export interface PlanEntry {
+  content: string;
+  priority: 'high' | 'medium' | 'low';
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+export interface Plan {
+  entries: PlanEntry[];
+}
+
 // WebSocket 消息类型
 export type WSMessageType = 
   | 'chat'
@@ -72,6 +83,7 @@ export type WSMessageType =
   | 'ping'
   | 'assistant_message'
   | 'tool_call'
+  | 'plan'
   | 'notification'
   | 'error'
   | 'cancel_result';
@@ -86,6 +98,7 @@ export interface WSMessage {
   arguments?: Record<string, unknown>;
   status?: ToolCall['status'];
   result?: unknown;
+  entries?: PlanEntry[];
   notification?: Notification;
   message?: string;
   token?: string;

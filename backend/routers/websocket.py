@@ -126,6 +126,12 @@ class ToolCallResponse(WSResponse):
     error: Optional[str] = None
 
 
+class PlanResponse(WSResponse):
+    """任务计划响应"""
+    type: str = "plan"
+    entries: list = []  # 计划条目列表
+
+
 class NotificationResponse(WSResponse):
     """通知推送响应"""
     type: str = "notification"
@@ -267,6 +273,14 @@ async def subscribe_redis_messages(
                                     status=data.get('status', 'in_progress'),
                                     result=data.get('result'),
                                     error=data.get('error'),
+                                ).model_dump()
+                            )
+
+                        elif msg_type == 'plan':
+                            # 任务计划
+                            await websocket.send_json(
+                                PlanResponse(
+                                    entries=data.get('entries', []),
                                 ).model_dump()
                             )
 
@@ -1081,6 +1095,14 @@ async def consume_cached_messages_for_conversation(
                                 status=data.get('status', 'in_progress'),
                                 result=data.get('result'),
                                 error=data.get('error'),
+                            ).model_dump()
+                        )
+
+                    elif msg_type == 'plan':
+                        # 任务计划
+                        await websocket.send_json(
+                            PlanResponse(
+                                entries=data.get('entries', []),
                             ).model_dump()
                         )
 

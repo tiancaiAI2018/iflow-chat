@@ -771,3 +771,134 @@
 .message-text .hljs {
   padding-right: 0;
 }
+
+/* Plan Message Styles */
+.message-plan {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.message-plan .message-avatar {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.message-plan .message-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.plan-container {
+  background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
+  border: 1px solid #e0e8ff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.1);
+}
+
+.plan-header {
+  font-size: 14px;
+  font-weight: 600;
+  color: #667eea;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0e8ff;
+}
+
+.plan-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e8ecf4;
+  transition: all 0.2s ease;
+}
+
+.plan-entry:hover {
+  border-color: #667eea;
+  box-shadow: 0 2px 4px rgba(102, 126, 234, 0.1);
+}
+
+.plan-entry.completed {
+  opacity: 0.7;
+}
+
+.plan-entry.in_progress {
+  border-left: 3px solid #667eea;
+  background: #f8f9ff;
+}
+
+.plan-status-icon {
+  font-size: 16px;
+  width: 20px;
+  text-align: center;
+}
+
+.plan-content {
+  flex: 1;
+  font-size: 14px;
+  color: #333;
+}
+
+.plan-priority {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.plan-priority-high {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.plan-priority-medium {
+  background: #fff3e0;
+  color: #ef6c00;
+}
+
+.plan-priority-low {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+/* Dark mode plan styles */
+[data-theme="dark"] .plan-container {
+  background: linear-gradient(135deg, #1a1f36 0%, #252b48 100%);
+  border-color: #3a4060;
+}
+
+[data-theme="dark"] .plan-header {
+  color: #a0a8ff;
+  border-bottom-color: #3a4060;
+}
+
+[data-theme="dark"] .plan-entry {
+  background: #1a1f36;
+  border-color: #3a4060;
+}
+
+[data-theme="dark"] .plan-entry.in_progress {
+  background: #252b48;
+  border-left-color: #a0a8ff;
+}
+
+[data-theme="dark"] .plan-content {
+  color: #e0e0e0;
+}

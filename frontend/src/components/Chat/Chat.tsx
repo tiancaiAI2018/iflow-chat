@@ -133,6 +133,7 @@ const Chat: React.FC<ChatProps> = ({
             isWaiting={msg.isWaiting}
             toolCalls={msg.toolCalls}
             toolCall={msg.toolCall}
+            planEntries={msg.planEntries}
             created_at={msg.created_at}
             attachments={msg.attachments}
           />

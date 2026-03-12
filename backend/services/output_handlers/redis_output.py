@@ -33,7 +33,7 @@ BATCH_TIME_THRESHOLD = 0.1  # 累积时间阈值（秒）
 @dataclass
 class QueuedMessage:
     """队列中的消息项"""
-    signal_type: str  # 'ai_response', 'ai_complete', 'tool_call'
+    signal_type: str  # 'ai_response', 'ai_complete', 'tool_call', 'plan'
     kwargs: dict      # 信号参数
 
 
@@ -150,6 +150,8 @@ class RedisOutputHandler:
                     await self._handle_ai_complete(**msg.kwargs)
                 elif msg.signal_type == 'tool_call':
                     await self._handle_tool_call(**msg.kwargs)
+                elif msg.signal_type == 'plan':
+                    await self._handle_plan(**msg.kwargs)
                 
                 self._queue.task_done()
                 
@@ -181,9 +183,16 @@ class RedisOutputHandler:
             self._queue.put_nowait(QueuedMessage(signal_type='tool_call', kwargs=kwargs))
             return None
 
+        # 订阅 plan 信号
+        @EventBus.on('plan')
+        def on_plan(sender, **kwargs):
+            # 放入队列，由消费者按顺序处理
+            self._queue.put_nowait(QueuedMessage(signal_type='plan', kwargs=kwargs))
+            return None
+
         # 保存订阅者引用以便后续取消
-        self._subscribers = [on_ai_response, on_ai_complete, on_tool_call]
-        logger.debug("RedisOutputHandler subscribed to ai_response, ai_complete, and tool_call signals")
+        self._subscribers = [on_ai_response, on_ai_complete, on_tool_call, on_plan]
+        logger.debug("RedisOutputHandler subscribed to ai_response, ai_complete, tool_call, and plan signals")
 
     async def _handle_ai_response(self, **kwargs):
         """
@@ -373,6 +382,39 @@ class RedisOutputHandler:
         except Exception as e:
             logger.error(f"Failed to push tool_call to Redis: {e}")
 
+    async def _handle_plan(self, **kwargs):
+        """
+        处理 plan 信号
+
+        先刷新该请求的批量缓冲区，然后将任务计划推送到 Redis Stream。
+        """
+        user_id = kwargs.get('user_id')
+        entries = kwargs.get('entries', [])
+        conversation_id = kwargs.get('conversation_id')
+        request_id = kwargs.get('request_id')
+
+        # 先刷新该请求的批量缓冲区
+        buffer_key = (user_id, conversation_id, request_id)
+        await self._flush_batch(buffer_key)
+
+        # 构建消息
+        message = {
+            'type': 'plan',
+            'entries': entries,
+        }
+
+        if conversation_id is not None:
+            message['conversation_id'] = conversation_id
+        if request_id is not None:
+            message['request_id'] = request_id
+
+        try:
+            await self.buffer.push(user_id=user_id, message=message)
+            logger.debug(f"Pushed plan to Redis for user {user_id}, entries={len(entries)}")
+        except Exception as e:
+            logger.error(f"Failed to push plan to Redis: {e}")
+
+
     def disconnect(self):
         """
         断开信号订阅
@@ -390,6 +432,10 @@ class RedisOutputHandler:
                 pass
             try:
                 EventBus.tool_call.disconnect(subscriber)
+            except Exception:
+                pass
+            try:
+                EventBus.plan.disconnect(subscriber)
             except Exception:
                 pass
 
