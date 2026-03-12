@@ -23,6 +23,8 @@ from backend.models.schemas import (
     VerifyCodeResponse,
     MeResponse,
     ErrorResponse,
+    UpdatePushKeyRequest,
+    UpdatePushKeyResponse,
 )
 from backend.services.auth import (
     hash_password,
@@ -349,3 +351,36 @@ async def token_info(
         "success": True,
         "token_info": info,
     }
+
+
+@router.post(
+    "/push-key",
+    response_model=UpdatePushKeyResponse,
+    responses={
+        401: {"model": ErrorResponse},
+    },
+    summary="更新推送密钥",
+    description="更新用户的 PushMe 推送密钥，用于定时任务手机推送"
+)
+async def update_push_key(
+    request: UpdatePushKeyRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UpdatePushKeyResponse:
+    """
+    更新 PushMe 推送密钥接口
+    
+    - **push_key**: PushMe 推送密钥（在 PushMe APP 上获取），传空则清除
+    
+    用于定时任务执行后推送到手机
+    """
+    # 更新 push_key
+    current_user.push_key = request.push_key
+    await db.commit()
+    await db.refresh(current_user)
+    
+    return UpdatePushKeyResponse(
+        success=True,
+        message="推送密钥更新成功",
+        push_key=current_user.push_key,
+    )

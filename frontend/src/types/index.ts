@@ -3,6 +3,7 @@ export interface User {
   id: number;
   username: string;
   email: string;
+  push_key?: string | null;
   created_at: string;
   last_login: string | null;
 }
@@ -224,4 +225,15 @@ export interface KillPortResponse {
   success: boolean;
   message: string;
   port: number;
+}
+
+// PushMe 推送相关类型
+export interface UpdatePushKeyRequest {
+  push_key: string | null;
+}
+
+export interface UpdatePushKeyResponse {
+  success: boolean;
+  message: string;
+  push_key: string | null;
 }

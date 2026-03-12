@@ -30,6 +30,7 @@ class UserResponse(BaseModel):
     id: int
     username: str
     email: str
+    push_key: Optional[str] = None
     created_at: Optional[datetime] = None
     last_login: Optional[datetime] = None
 
@@ -92,6 +93,18 @@ class MeResponse(BaseModel):
     """获取当前用户信息响应模型"""
     success: bool = True
     user: UserResponse
+
+
+class UpdatePushKeyRequest(BaseModel):
+    """更新 PushMe push_key 请求模型"""
+    push_key: Optional[str] = Field(None, max_length=100, description="PushMe 推送密钥，传空则清除")
+
+
+class UpdatePushKeyResponse(BaseModel):
+    """更新 PushMe push_key 响应模型"""
+    success: bool = True
+    message: str = "推送密钥更新成功"
+    push_key: Optional[str] = None
 
 
 class ErrorResponse(BaseModel):

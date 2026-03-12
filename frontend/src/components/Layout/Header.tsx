@@ -5,6 +5,7 @@ import { useNotifications } from '../../hooks/useNotifications';
 import { NotificationBar } from '../Notification';
 import NewChatButton from '../Chat/NewChatButton';
 import HistoryButton from '../Chat/HistoryButton';
+import PushKeySettings from '../Settings/PushKeySettings';
 import { apiService } from '../../services/api';
 import type { ACPInfoResponse } from '../../types';
 import './Layout.css';
@@ -33,6 +34,7 @@ const Header: React.FC<HeaderProps> = ({
   const [acpInfo, setAcpInfo] = useState<ACPInfoResponse | null>(null);
   const [isLoadingACP, setIsLoadingACP] = useState(false);
   const [killingPort, setKillingPort] = useState<number | null>(null);
+  const [showPushKeySettings, setShowPushKeySettings] = useState(false);
 
   // 定期刷新未读数量
   useEffect(() => {
@@ -260,6 +262,16 @@ const Header: React.FC<HeaderProps> = ({
             
             <div className="menu-divider"></div>
             
+            <button className="menu-item" onClick={() => {
+              setIsUserMenuOpen(false);
+              setShowPushKeySettings(true);
+            }}>
+              <span className="menu-icon">📱</span>
+              推送设置
+            </button>
+            
+            <div className="menu-divider"></div>
+            
             <button className="menu-item" onClick={handleLogout}>
               <span className="menu-icon">🚪</span>
               退出登录
@@ -380,6 +392,20 @@ const Header: React.FC<HeaderProps> = ({
 
             <div className="mobile-menu-divider"></div>
 
+            {/* 推送设置按钮 */}
+            <button 
+              className="mobile-nav-item"
+              onClick={() => {
+                setIsMobileMenuOpen(false);
+                setShowPushKeySettings(true);
+              }}
+            >
+              <span className="nav-icon">📱</span>
+              <span className="nav-text">推送设置</span>
+            </button>
+
+            <div className="mobile-menu-divider"></div>
+
             {/* Logout Button */}
             <button className="mobile-logout-btn" onClick={handleLogout}>
               <span className="menu-icon">🚪</span>
@@ -388,6 +414,20 @@ const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
       )}
+
+      {/* 推送设置模态框 */}
+      <PushKeySettings
+        isOpen={showPushKeySettings}
+        onClose={() => setShowPushKeySettings(false)}
+        currentPushKey={user?.push_key}
+        onUpdated={(pushKey) => {
+          // 更新本地用户信息
+          if (user) {
+            const updatedUser = { ...user, push_key: pushKey };
+            localStorage.setItem('user', JSON.stringify(updatedUser));
+          }
+        }}
+      />
     </header>
   );
 };

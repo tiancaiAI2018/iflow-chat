@@ -21,6 +21,7 @@ import type {
   ACPInfoResponse,
   KillPortRequest,
   KillPortResponse,
+  UpdatePushKeyResponse,
 } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
@@ -270,6 +271,16 @@ class ApiService {
    */
   async killACPPort(port: number): Promise<KillPortResponse> {
     const response = await this.api.post<KillPortResponse>('/acp/kill-port', { port });
+    return response.data;
+  }
+
+  // ========== PushMe 推送相关 ==========
+
+  /**
+   * 更新 PushMe 推送密钥
+   */
+  async updatePushKey(pushKey: string | null): Promise<UpdatePushKeyResponse> {
+    const response = await this.api.post<UpdatePushKeyResponse>('/auth/push-key', { push_key: pushKey });
     return response.data;
   }
 }
