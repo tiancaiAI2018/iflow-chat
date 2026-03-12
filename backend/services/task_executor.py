@@ -1,8 +1,9 @@
 """
 任务执行服务
-定时任务触发后执行：调用 iFlow、保存通知、WebSocket 推送
+定时任务触发后执行：调用 iFlow、保存通知、WebSocket 推送、PushMe 手机推送
 包含错误处理和重试机制
 支持详细日志记录和通知推送优化
+支持 PushMe 手机推送通知
 """
 import asyncio
 import logging
@@ -12,6 +13,10 @@ from datetime import datetime
 from backend.services.iflow_client import IFlowClientService, MessageType
 from backend.services.websocket_manager import get_websocket_manager, WebSocketManager
 from backend.services.notification_store import NotificationStore, get_notification_store
+from backend.services.pushme_service import get_pushme_service
+from backend.database import async_session_maker
+from backend.models.user import User
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +88,7 @@ class TaskExecutor:
                 
                 # 1. 调用 iFlow 执行任务
                 logger.info(f"[TaskExecutor] Calling iFlow...")
-                response = await self._call_iflow(content)
+                response = await self._call_iflow(content, task_id)
                 result["response"] = response
                 result["success"] = True
                 result["retries"] = retry_count
@@ -114,6 +119,10 @@ class TaskExecutor:
                     logger.info(f"[TaskExecutor] WebSocket push result: {pushed}")
                 else:
                     logger.info(f"[TaskExecutor] User offline, notification saved to store only")
+                
+                # 5. PushMe 手机推送（用户配置了 push_key 时）
+                pushme_result = await self._pushme_notify(user_id, content, response, success=True)
+                result["pushme_pushed"] = pushme_result
                 
                 logger.info(f"[TaskExecutor] Task execution completed successfully")
                 logger.info(f"  success: {result['success']}")
@@ -187,16 +196,25 @@ class TaskExecutor:
         """
         return self._execution_history.get(task_id, [])
     
-    async def _call_iflow(self, task_content: str) -> str:
+    async def _call_iflow(self, task_content: str, task_id: str) -> str:
         """
         调用 iFlow 执行任务
         
+        使用 task_id 生成独立的 user_id，避免和用户聊天连接冲突。
+        定时任务的连接是一次性的，执行完毕自动关闭。
+        
         Args:
             task_content: 任务内容
+            task_id: 任务 ID，用于生成独立的 user_id
         
         Returns:
             str: iFlow 响应
         """
+        # 用 task_id 哈希生成独立的负数 user_id，不和用户聊天冲突
+        # 范围: -1 到 -10000，确保不和正数 user_id 冲突
+        task_user_id = -abs(hash(task_id) % 10000) - 1
+        logger.debug(f"Task {task_id} using isolated user_id={task_user_id}")
+        
         # 构建带上下文的提示，让 iFlow 知道这是定时任务执行
         context_message = f"""【定时任务触发通知】
 
@@ -208,7 +226,8 @@ class TaskExecutor:
         
         full_response = []
         
-        async with IFlowClientService() as client:
+        # 使用独立的 user_id 创建连接，避免和用户聊天冲突
+        async with IFlowClientService(user_id=task_user_id) as client:
             async for msg in client.query_stream(context_message):
                 if msg.type == MessageType.TEXT and msg.content:
                     full_response.append(msg.content)
@@ -263,6 +282,57 @@ class TaskExecutor:
             return count > 0
         except Exception as e:
             logger.error(f"Failed to push notification: {e}")
+            return False
+    
+    async def _pushme_notify(
+        self,
+        user_id: int,
+        task_content: str,
+        response: str,
+        success: bool = True,
+    ) -> bool:
+        """
+        通过 PushMe 发送手机推送通知
+        
+        Args:
+            user_id: 用户 ID
+            task_content: 任务内容
+            response: 执行结果
+            success: 是否执行成功
+        
+        Returns:
+            bool: 是否推送成功
+        """
+        try:
+            # 从数据库获取用户的 push_key
+            async with async_session_maker() as db:
+                result = await db.execute(
+                    select(User).where(User.id == user_id)
+                )
+                user = result.scalar_one_or_none()
+                
+                if not user or not user.push_key:
+                    logger.debug(f"User {user_id} has no push_key configured, skipping PushMe")
+                    return False
+                
+                # 发送 PushMe 推送
+                pushme = get_pushme_service()
+                pushed = await pushme.send_task_notification(
+                    push_key=user.push_key,
+                    task_content=task_content,
+                    response=response,
+                    success=success,
+                )
+                
+                if pushed:
+                    logger.info(f"[TaskExecutor] PushMe notification sent to user {user_id}")
+                else:
+                    logger.warning(f"[TaskExecutor] PushMe notification failed for user {user_id}")
+                
+                return pushed
+                
+        except Exception as e:
+            logger.error(f"[TaskExecutor] Error sending PushMe notification: {e}")
             return False
 
 

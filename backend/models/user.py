@@ -22,6 +22,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    push_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="PushMe 推送密钥")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
