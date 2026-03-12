@@ -41,6 +41,7 @@ interface ChatContextValue {
   isConnected: boolean;
   error: string | null;
   sendMessage: (content: string, attachments?: Attachment[]) => void;
+  cancelMessage: () => void;
   clearMessages: () => void;
   // 会话相关
   conversations: ConversationResponse[];
@@ -655,6 +656,18 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     streamingContentRef.current = '';
   }, []);
 
+  // 取消当前消息生成（关闭 WebSocket 连接）
+  const cancelMessage = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setIsStreaming(false);
+    setIsWaiting(false);
+    setCurrentAssistantMessage('');
+    streamingContentRef.current = '';
+  }, []);
+
   // 合并当前正在流式输出的消息
   const allMessages = [...messages];
   if (currentAssistantMessage) {
@@ -674,6 +687,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children, onNotifica
     isConnected,
     error,
     sendMessage,
+    cancelMessage,
     clearMessages,
     // 会话相关
     conversations,

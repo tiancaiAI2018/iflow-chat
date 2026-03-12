@@ -480,6 +480,29 @@ class IFlowClientService:
         logger.debug(f"Removed port {port} from used ports")
     
     @classmethod
+    def get_user_acp_info(cls, user_id: int) -> dict:
+        """获取用户的 ACP 端口信息（公共接口）"""
+        ports = cls._user_ports.get(user_id, []).copy()
+        return {
+            "user_id": user_id,
+            "ports": ports,
+            "current_port": ports[0] if ports else None,
+            "total_ports": len(ports),
+            "last_used": None
+        }
+    
+    @classmethod
+    def get_all_acp_status(cls) -> dict:
+        """获取 ACP 全局状态（公共接口）"""
+        return {
+            "user_ports": {uid: ports.copy() for uid, ports in cls._user_ports.items()},
+            "used_ports": list(cls._used_ports),
+            "total_used": len(cls._used_ports),
+            "active_processes": len(cls._used_ports),
+            "last_used_ports": {}
+        }
+    
+    @classmethod
     async def _start_acp_process(cls, port: int) -> asyncio.subprocess.Process:
         """
         启动 ACP 进程

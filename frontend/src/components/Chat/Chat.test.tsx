@@ -90,6 +90,7 @@ const defaultChatContextValue = {
   isConnected: true,
   error: null,
   sendMessage: jest.fn(),
+  cancelMessage: jest.fn(),
   clearMessages: jest.fn(),
   // 会话相关
   conversations: [],

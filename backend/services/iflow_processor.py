@@ -3,6 +3,11 @@ iFlow 业务逻辑处理器
 
 订阅 EventBus 的 user_message 信号，调用 iFlow Client 进行 AI 对话，
 并发射 ai_response/ai_complete 信号实现业务逻辑与输入输出的解耦。
+
+使用 IFlowConnectionPool 管理连接，支持：
+1. 同用户同会话复用连接
+2. 同用户切换会话自动管理连接
+3. 空闲超时自动清理
 """
 import asyncio
 import logging
@@ -12,16 +17,16 @@ from datetime import datetime
 
 from backend.services.event_bus import EventBus
 from backend.services.iflow_client import IFlowClientService, MessageType
+from backend.services.connection_pool import get_connection_pool
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ProcessorSession:
-    """处理器会话信息"""
+    """处理器会话信息（仅保存元数据，连接由连接池管理）"""
     user_id: int
     conversation_id: Optional[int] = None
-    iflow_client: Optional[IFlowClientService] = None
     working_directory: str = "/root/.iflow-bot/workspace"
     created_at: datetime = field(default_factory=datetime.now)
 
@@ -32,22 +37,19 @@ class IFlowProcessor:
 
     负责：
     1. 订阅 user_message 信号，接收用户输入
-    2. 管理用户的 iFlow Client 连接
+    2. 通过连接池管理用户的 iFlow Client 连接
     3. 调用 iFlow 进行 AI 对话
     4. 发射 ai_response 和 ai_complete 信号
 
-    使用示例：
-        processor = IFlowProcessor()
-
-        # 处理器会自动订阅信号并处理消息
-
-        # 断开连接时
-        processor.disconnect()
+    连接管理委托给 IFlowConnectionPool，支持：
+    - 同用户同会话复用连接
+    - 同用户切换会话自动管理连接
+    - 空闲超时自动清理
     """
 
     def __init__(self):
         """初始化 iFlow 处理器"""
-        # 用户会话映射：user_id -> ProcessorSession
+        # 用户会话映射：user_id -> ProcessorSession（仅保存元数据）
         self._sessions: Dict[int, ProcessorSession] = {}
         # 订阅者引用
         self._subscribers = []
@@ -70,7 +72,7 @@ class IFlowProcessor:
         """
         处理 user_message 信号
 
-        调用 iFlow Client 进行 AI 对话，并发射响应信号。
+        通过连接池获取 iFlow Client 进行 AI 对话，并发射响应信号。
 
         Args:
             sender: 信号发送者
@@ -79,21 +81,31 @@ class IFlowProcessor:
                 - content (str): 消息内容
                 - conversation_id (int, optional): 会话 ID
                 - working_directory (str, optional): 工作目录
+                - request_id (str, optional): 请求 ID，用于过滤消息
         """
         user_id = kwargs.get('user_id')
         content = kwargs.get('content', '')
         conversation_id = kwargs.get('conversation_id')
         working_directory = kwargs.get('working_directory', '/root/.iflow-bot/workspace')
+        request_id = kwargs.get('request_id')  # 获取 request_id
 
         if not user_id or not content:
             logger.warning(f"Invalid user_message: user_id={user_id}, content_len={len(content)}")
             return
 
-        logger.debug(f"Processing user_message: user_id={user_id}, content={content[:50]}...")
+        logger.debug(f"Processing user_message: user_id={user_id}, request_id={request_id}, content={content[:50]}...")
 
         try:
-            # 获取或创建用户会话
-            session = await self._get_or_create_session(
+            # 通过连接池获取或创建连接
+            pool = get_connection_pool()
+            iflow_client = await pool.get_connection(
+                user_id=user_id,
+                conversation_id=conversation_id or 0,
+                working_directory=working_directory,
+            )
+
+            # 更新会话元数据
+            self._sessions[user_id] = ProcessorSession(
                 user_id=user_id,
                 conversation_id=conversation_id,
                 working_directory=working_directory,
@@ -102,7 +114,7 @@ class IFlowProcessor:
             # 调用 iFlow 进行对话
             full_response = []
 
-            async for msg in session.iflow_client.query_stream(content):
+            async for msg in iflow_client.query_stream(content):
                 if msg.type == MessageType.TEXT:
                     # 文本消息 - 发射 ai_response 信号
                     if msg.content:
@@ -115,6 +127,7 @@ class IFlowProcessor:
                         content=msg.content,
                         is_delta=msg.is_delta,
                         conversation_id=conversation_id,
+                        request_id=request_id,  # 传递 request_id
                     )
 
                 elif msg.type == MessageType.TASK_FINISH:
@@ -126,6 +139,7 @@ class IFlowProcessor:
                         content='',
                         is_delta=False,
                         conversation_id=conversation_id,
+                        request_id=request_id,  # 传递 request_id
                     )
 
             # 发射 ai_complete 信号
@@ -136,9 +150,10 @@ class IFlowProcessor:
                 user_id=user_id,
                 content=response_text,
                 conversation_id=conversation_id,
+                request_id=request_id,  # 传递 request_id
             )
 
-            logger.debug(f"Completed AI response for user {user_id}, len={len(response_text)}")
+            logger.debug(f"Completed AI response for user {user_id}, request_id={request_id}, len={len(response_text)}")
 
         except Exception as e:
             logger.error(f"Error processing user_message: {e}")
@@ -161,79 +176,15 @@ class IFlowProcessor:
                 metadata={'error': str(e)},
             )
 
-    async def _get_or_create_session(
-        self,
-        user_id: int,
-        conversation_id: Optional[int] = None,
-        working_directory: str = "/root/.iflow-bot/workspace",
-    ) -> ProcessorSession:
-        """
-        获取或创建用户会话
-
-        如果会话不存在或工作目录发生变化，创建新的 iFlow Client。
-
-        Args:
-            user_id: 用户 ID
-            conversation_id: 会话 ID
-            working_directory: 工作目录
-
-        Returns:
-            ProcessorSession: 用户会话
-        """
-        # 检查是否需要重新创建会话
-        if user_id in self._sessions:
-            session = self._sessions[user_id]
-            # 如果工作目录没变，重用现有会话
-            if session.working_directory == working_directory and session.iflow_client and session.iflow_client.is_connected:
-                # 更新会话 ID
-                if conversation_id is not None:
-                    session.conversation_id = conversation_id
-                return session
-            else:
-                # 工作目录变了或连接断开，关闭旧会话
-                await self._close_session(user_id)
-
-        # 创建新会话
-        session = ProcessorSession(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            working_directory=working_directory,
-        )
-
-        # 创建 iFlow Client
-        iflow_client = IFlowClientService(
-            cwd=working_directory,
-        )
-        await iflow_client.connect()
-        session.iflow_client = iflow_client
-
-        # 保存会话
-        self._sessions[user_id] = session
-        logger.info(f"Created new IFlow session for user {user_id}, cwd={working_directory}")
-
-        return session
-
-    async def _close_session(self, user_id: int):
-        """关闭用户会话"""
-        if user_id in self._sessions:
-            session = self._sessions[user_id]
-            if session.iflow_client:
-                try:
-                    await session.iflow_client.disconnect()
-                except Exception as e:
-                    logger.warning(f"Error closing IFlow client: {e}")
-            del self._sessions[user_id]
-            logger.debug(f"Closed IFlow session for user {user_id}")
-
     def get_session(self, user_id: int) -> Optional[ProcessorSession]:
         """
-        获取用户会话
+        获取用户会话元数据
 
         Args:
             user_id: 用户 ID
 
         Returns:
-            Optional[ProcessorSession]: 用户会话，不存在则返回 None
+            Optional[ProcessorSession]: 用户会话元数据，不存在则返回 None
         """
         return self._sessions.get(user_id)
 
@@ -241,10 +192,14 @@ class IFlowProcessor:
         """
         关闭指定用户的会话
 
+        连接管理委托给连接池，这里只清理元数据。
+
         Args:
             user_id: 用户 ID
         """
-        await self._close_session(user_id)
+        if user_id in self._sessions:
+            del self._sessions[user_id]
+            logger.debug(f"Cleared session metadata for user {user_id}")
 
     def disconnect(self):
         """
@@ -265,14 +220,12 @@ class IFlowProcessor:
         """
         关闭所有资源
 
-        断开信号订阅并关闭所有 iFlow 客户端连接。
+        断开信号订阅。连接由连接池管理，不需要在这里关闭。
         """
         self.disconnect()
 
-        # 关闭所有用户会话
-        user_ids = list(self._sessions.keys())
-        for user_id in user_ids:
-            await self._close_session(user_id)
+        # 清理会话元数据
+        self._sessions.clear()
 
         logger.info("IFlowProcessor closed all resources")
 

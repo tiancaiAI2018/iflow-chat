@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # 数据库配置
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/app.db"
     
+    # 日志配置
+    LOG_DIR: str = "./log"
+    LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    LOG_LEVEL: str = "INFO"
+    LOG_RETENTION_DAYS: int = 7
+    
     # Redis 配置
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_MAX_MEMORY: str = "32mb"  # Redis 最大内存限制

@@ -40,6 +40,10 @@ class EventBus:
     # 参数：user_id (int), content (str), conversation_id (int, optional), metadata (dict, optional)
     ai_complete = Signal('ai_complete')
 
+    # 工具调用信号
+    # 参数：user_id (int), tool_name (str), tool_args (dict), result (any, optional), metadata (dict, optional)
+    tool_call = Signal('tool_call')
+
     @classmethod
     def emit(cls, signal_name: str, sender=None, **kwargs):
         """
