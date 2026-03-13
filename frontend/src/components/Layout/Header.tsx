@@ -74,8 +74,12 @@ const Header: React.FC<HeaderProps> = ({
 
   // Kill ACP 端口
   const handleKillPort = async (port: number) => {
+    // 当前端口需要确认
     if (port === acpInfo?.current_port) {
-      return; // 不能 kill 当前端口
+      const confirmed = window.confirm('当前端口正在使用中，停止后会影响正在进行的对话。确定要停止吗？');
+      if (!confirmed) {
+        return;
+      }
     }
     setKillingPort(port);
     try {
@@ -240,16 +244,14 @@ const Header: React.FC<HeaderProps> = ({
                           {port === acpInfo.current_port ? '● 当前' : '○ 旧连接'}
                         </span>
                       </div>
-                      {port !== acpInfo.current_port && (
-                        <button
-                          className="acp-kill-btn"
-                          onClick={() => handleKillPort(port)}
-                          disabled={killingPort === port}
-                          title="停止此连接"
-                        >
-                          {killingPort === port ? '⏳' : '✕'}
-                        </button>
-                      )}
+                      <button
+                        className={`acp-kill-btn ${port === acpInfo.current_port ? 'current-kill' : ''}`}
+                        onClick={() => handleKillPort(port)}
+                        disabled={killingPort === port}
+                        title={port === acpInfo.current_port ? '停止当前连接（会影响对话）' : '停止此连接'}
+                      >
+                        {killingPort === port ? '⏳' : '✕'}
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -369,16 +371,14 @@ const Header: React.FC<HeaderProps> = ({
                             {port === acpInfo.current_port ? '● 当前' : '○ 旧连接'}
                           </span>
                         </div>
-                        {port !== acpInfo.current_port && (
-                          <button
-                            className="acp-kill-btn"
-                            onClick={() => handleKillPort(port)}
-                            disabled={killingPort === port}
-                            title="停止此连接"
-                          >
-                            {killingPort === port ? '⏳' : '✕'}
-                          </button>
-                        )}
+                        <button
+                          className={`acp-kill-btn ${port === acpInfo.current_port ? 'current-kill' : ''}`}
+                          onClick={() => handleKillPort(port)}
+                          disabled={killingPort === port}
+                          title={port === acpInfo.current_port ? '停止当前连接（会影响对话）' : '停止此连接'}
+                        >
+                          {killingPort === port ? '⏳' : '✕'}
+                        </button>
                       </div>
                     ))}
                   </div>

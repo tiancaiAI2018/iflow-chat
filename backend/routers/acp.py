@@ -119,7 +119,7 @@ async def get_connection_pool_status(
     "/kill-port",
     response_model=KillPortResponse,
     summary="Kill 指定的 ACP 端口",
-    description="停止并清理指定的 ACP 进程，只能 kill 当前用户非活跃的端口"
+    description="停止并清理指定的 ACP 进程，只能 kill 当前用户的端口"
 )
 async def kill_acp_port(
     request: KillPortRequest,
@@ -128,9 +128,8 @@ async def kill_acp_port(
     """
     Kill 指定的 ACP 端口
     
-    只能 kill：
-    1. 属于当前用户的端口
-    2. 非当前活跃的端口（栈顶端口不能 kill）
+    只能 kill 属于当前用户的端口。
+    注意：kill 当前活跃端口会中断正在进行的对话。
     
     Args:
         request: 包含 port 的请求体
@@ -153,12 +152,7 @@ async def kill_acp_port(
             detail=f"端口 {port} 不属于当前用户"
         )
     
-    # 检查是否是当前活跃端口
-    if port == current_port:
-        raise HTTPException(
-            status_code=400,
-            detail=f"端口 {port} 是当前活跃端口，无法 kill"
-        )
+    is_current = (port == current_port)
     
     try:
         # 停止 ACP 进程
@@ -167,9 +161,13 @@ async def kill_acp_port(
         # 从用户端口栈中移除
         IFlowClientService._remove_user_port(user_id, port)
         
+        message = f"已成功停止端口 {port} 的 ACP 进程"
+        if is_current:
+            message += "（当前活跃连接已断开）"
+        
         return KillPortResponse(
             success=True,
-            message=f"已成功停止端口 {port} 的 ACP 进程",
+            message=message,
             port=port
         )
         

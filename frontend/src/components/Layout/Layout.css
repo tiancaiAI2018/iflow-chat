@@ -827,6 +827,15 @@
   cursor: not-allowed;
 }
 
+/* 当前端口的 kill 按钮样式 - 警告色调 */
+.acp-kill-btn.current-kill {
+  background: #ffa726;
+}
+
+.acp-kill-btn.current-kill:hover {
+  background: #ff9800;
+}
+
 .acp-empty {
   padding: 16px;
   text-align: center;
