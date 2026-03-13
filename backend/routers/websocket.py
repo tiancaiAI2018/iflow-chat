@@ -58,6 +58,7 @@ class ChatMessage(WSMessage):
     type: str = "chat"
     content: str
     conversation_id: Optional[int] = None  # 会话 ID（可选，用于切换会话）
+    files: Optional[list] = None  # 附件列表（包含 base64 数据）
 
 
 class AuthMessage(WSMessage):
@@ -520,6 +521,9 @@ async def websocket_endpoint(
 
                 # 获取消息中的 conversation_id（可选，用于首次指定会话）
                 message_conversation_id = data.get("conversation_id")
+                
+                # 获取附件列表（可选）
+                message_files = data.get("files")
 
                 # 处理聊天消息（使用 EventBus）
                 result = await handle_chat_message_eventbus(
@@ -533,6 +537,7 @@ async def websocket_endpoint(
                     redis_stop_event=redis_stop_event,
                     redis_task=redis_task,
                     processed_ids=processed_ids,
+                    files=message_files,  # 传递附件
                 )
                 # 解包返回值：(conversation_id, redis_task)
                 if isinstance(result, tuple):
@@ -657,6 +662,7 @@ async def handle_chat_message_eventbus(
     redis_stop_event: Optional[asyncio.Event] = None,
     redis_task: Optional[asyncio.Task] = None,
     processed_ids: Optional[Set[str]] = None,
+    files: Optional[list] = None,  # 附件列表
 ) -> Tuple[Optional[int], Optional[asyncio.Task]]:
     """
     处理聊天消息（使用 EventBus）
@@ -678,6 +684,7 @@ async def handle_chat_message_eventbus(
         redis_stop_event: Redis 订阅停止信号
         redis_task: Redis 订阅任务
         processed_ids: 已处理的消息 ID 集合
+        files: 附件列表（可选，包含 base64 数据）
 
     Returns:
         Optional[int]: 更新后的会话 ID
@@ -739,6 +746,7 @@ async def handle_chat_message_eventbus(
         conversation_id=current_conversation_id,
         working_directory=cwd,
         request_id=request_id,  # 传递 request_id
+        files=files,  # 传递附件
     )
 
     # 启动 Redis 订阅任务

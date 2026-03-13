@@ -775,6 +775,7 @@ class IFlowClientService:
         on_tool_call: Optional[Callable[[ChatMessage], None]] = None,
         auto_reconnect: bool = True,
         enable_task_detection: bool = True,
+        files: Optional[List[Any]] = None,
     ) -> AsyncGenerator[ChatMessage, None]:
         """
         流式查询处理
@@ -784,6 +785,7 @@ class IFlowClientService:
             on_tool_call: 工具调用回调函数
             auto_reconnect: 是否在连接断开时自动重连
             enable_task_detection: 是否启用定时任务意图检测（注入系统提示词）
+            files: 附件列表（支持 base64 编码的图片等）
         
         Yields:
             ChatMessage: 解析后的消息
@@ -821,9 +823,65 @@ class IFlowClientService:
             if enable_task_detection:
                 actual_message = SYSTEM_PROMPT_PREFIX + message
             
-            # 发送消息
-            await self._client.send_message(actual_message)
-            logger.debug(f"Sent message: {message[:50]}...")
+            # 发送消息（包含附件）
+            # files 格式: [{"name": "filename.png", "data": "base64data", "mimeType": "image/png"}, ...]
+            # SDK 需要 files 参数接受文件路径，需要将 base64 写入临时文件
+            sdk_files = None
+            temp_files = []  # 记录临时文件路径，用于后续清理
+            
+            if files:
+                import tempfile
+                import base64 as b64
+                import uuid
+                
+                sdk_files = []
+                for f in files:
+                    if isinstance(f, dict) and f.get('data'):
+                        # 将 base64 数据写入临时文件（放在工作区目录下，这样 iFlow 可以访问）
+                        file_data = f['data']
+                        file_name = f.get('name', 'attachment')
+                        mime_type = f.get('mimeType', 'application/octet-stream')
+                        
+                        # 确定文件扩展名
+                        ext = ''
+                        if mime_type.startswith('image/'):
+                            ext = '.' + mime_type.split('/')[1]
+                            if ext == '.jpeg':
+                                ext = '.jpg'
+                        elif '.' in file_name:
+                            ext = '.' + file_name.rsplit('.', 1)[1]
+                        
+                        # 在工作区目录下创建 .uploads 子目录
+                        uploads_dir = os.path.join(self.cwd, '.uploads')
+                        os.makedirs(uploads_dir, exist_ok=True)
+                        
+                        # 创建临时文件（在工作区内）
+                        try:
+                            temp_name = f"upload_{uuid.uuid4().hex[:8]}{ext}"
+                            temp_path = os.path.join(uploads_dir, temp_name)
+                            with open(temp_path, 'wb') as temp_file:
+                                temp_file.write(b64.b64decode(file_data))
+                            sdk_files.append(temp_path)
+                            temp_files.append(temp_path)
+                            logger.debug(f"Created temp file for attachment: {file_name} -> {temp_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to create temp file for {file_name}: {e}")
+                    elif isinstance(f, str):
+                        # 已经是文件路径
+                        if os.path.exists(f):
+                            sdk_files.append(f)
+            
+            try:
+                await self._client.send_message(actual_message, files=sdk_files)
+                logger.debug(f"Sent message: {message[:50]}..., files={len(sdk_files) if sdk_files else 0}")
+            finally:
+                # 清理临时文件
+                for temp_path in temp_files:
+                    try:
+                        os.remove(temp_path)
+                        logger.debug(f"Cleaned up temp file: {temp_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up temp file {temp_path}: {e}")
             
             # 接收并处理消息
             async for msg in self._client.receive_messages():

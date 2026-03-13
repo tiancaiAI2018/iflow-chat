@@ -91,6 +91,7 @@ class IFlowProcessor:
         conversation_id = kwargs.get('conversation_id')
         working_directory = kwargs.get('working_directory', '/root/.iflow-bot/workspace')
         request_id = kwargs.get('request_id')  # 获取 request_id
+        files = kwargs.get('files')  # 获取附件
 
         if not user_id or not content:
             logger.warning(f"Invalid user_message: user_id={user_id}, content_len={len(content)}")
@@ -146,7 +147,7 @@ class IFlowProcessor:
             # 调用 iFlow 进行对话
             full_response = []
 
-            async for msg in iflow_client.query_stream(content):
+            async for msg in iflow_client.query_stream(content, files=files):
                 if msg.type == MessageType.TEXT:
                     # 文本消息 - 发射 ai_response 信号
                     if msg.content:
