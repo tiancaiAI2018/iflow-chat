@@ -20,6 +20,8 @@
 | 技术 | 版本 | 说明 |
 |------|------|------|
 | FastAPI | >= 0.111.0 | Web 框架 |
+| SQLite | - | 主数据库 (aiosqlite 异步驱动) |
+| Redis | >= 5.0.0 | 缓存 / 消息队列 / 会话存储 |
 | SQLAlchemy | >= 2.0.25 | ORM |
 | Pydantic | >= 2.5.3 | 数据验证 |
 | APScheduler | 3.10.4 | 任务调度 |
