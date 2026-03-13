@@ -51,3 +51,12 @@ node_modules/
 # Data files (generated at runtime)
 backend/data/
 data/
+
+# Private / sensitive files
+.agents/skills/
+.iflow/
+skills/
+feature-list.json
+iflow_runner.sh
+process.txt
+prompt.txt
